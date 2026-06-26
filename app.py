@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import base64
+import json
 from pathlib import Path
-from types import SimpleNamespace
+from io import BytesIO
 from tempfile import NamedTemporaryFile
+from types import SimpleNamespace
 
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image, ImageDraw
 
 from s3_360.data import generate_demo_video, load_video, save_npz
@@ -149,6 +153,409 @@ def segment_previews(video, segments, result, max_items: int = 6) -> list[tuple[
     return previews
 
 
+def image_data_url(image: Image.Image, max_width: int = 1024) -> str:
+    image = image.convert("RGB")
+    if image.width > max_width:
+        target_height = int(image.height * max_width / image.width)
+        image = image.resize((max_width, target_height), Image.Resampling.BICUBIC)
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=82, optimize=True)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def vr_tour_frames(video, segments, result, max_items: int = 8) -> list[dict[str, object]]:
+    if video.frames is None:
+        return []
+    tour = []
+    for segment_idx in result.selected[:max_items]:
+        frame_idx = int((segments.starts[segment_idx] + segments.ends[segment_idx] - 1) // 2)
+        viewport = segments.viewport_xy[segment_idx]
+        start_sec = float(segments.starts[segment_idx] / segments.fps)
+        end_sec = float(segments.ends[segment_idx] / segments.fps)
+        tour.append(
+            {
+                "label": f"片段 {int(segment_idx)}",
+                "time": f"{start_sec:.1f}s-{end_sec:.1f}s",
+                "src": image_data_url(raw_frame(video.frames[frame_idx])),
+                "yaw": float((viewport[0] - 0.5) * 2 * np.pi),
+                "pitch": float((0.5 - viewport[1]) * np.pi),
+            }
+        )
+    return tour
+
+
+def panorama_viewer_html(tour: list[dict[str, object]]) -> str:
+    payload = json.dumps(tour, ensure_ascii=False)
+    return f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    html, body {{
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #05070d;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    .stage {{
+      position: relative;
+      height: 560px;
+      background: #05070d;
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      overflow: hidden;
+    }}
+    canvas {{
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+      touch-action: none;
+    }}
+    canvas.dragging {{
+      cursor: grabbing;
+    }}
+    .hud {{
+      position: absolute;
+      inset: 14px 14px auto 14px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      pointer-events: none;
+    }}
+    .badge, .controls button, .segment button {{
+      border: 1px solid rgba(255,255,255,0.22);
+      background: rgba(8, 13, 24, 0.74);
+      color: #f8fafc;
+      border-radius: 8px;
+      backdrop-filter: blur(8px);
+    }}
+    .badge {{
+      padding: 8px 10px;
+      font-size: 13px;
+      line-height: 1.35;
+    }}
+    .badge strong {{
+      display: block;
+      font-size: 15px;
+    }}
+    .controls {{
+      display: flex;
+      gap: 8px;
+      pointer-events: auto;
+    }}
+    .controls button {{
+      width: 38px;
+      height: 38px;
+      font-size: 15px;
+      cursor: pointer;
+    }}
+    .reticle {{
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 36px;
+      height: 36px;
+      margin-left: -18px;
+      margin-top: -18px;
+      border: 2px solid rgba(255,255,255,0.88);
+      border-radius: 50%;
+      box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.95), 0 0 24px rgba(37, 99, 235, 0.45);
+      pointer-events: none;
+    }}
+    .reticle::before, .reticle::after {{
+      content: "";
+      position: absolute;
+      background: rgba(255,255,255,0.88);
+    }}
+    .reticle::before {{
+      left: 50%;
+      top: -9px;
+      bottom: -9px;
+      width: 2px;
+      transform: translateX(-50%);
+    }}
+    .reticle::after {{
+      top: 50%;
+      left: -9px;
+      right: -9px;
+      height: 2px;
+      transform: translateY(-50%);
+    }}
+    .segment {{
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      bottom: 14px;
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      pointer-events: auto;
+      padding-bottom: 2px;
+    }}
+    .segment button {{
+      flex: 0 0 auto;
+      min-width: 92px;
+      padding: 8px 10px;
+      font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+      opacity: 0.7;
+    }}
+    .segment button.active {{
+      border-color: #60a5fa;
+      background: rgba(37, 99, 235, 0.82);
+      opacity: 1;
+    }}
+  </style>
+</head>
+<body>
+  <div class="stage" id="stage">
+    <canvas id="viewer"></canvas>
+    <div class="hud">
+      <div class="badge"><strong id="title">全景导览</strong><span id="subtitle"></span></div>
+      <div class="controls">
+        <button id="prev" title="上一个片段">‹</button>
+        <button id="play" title="自动导览">▶</button>
+        <button id="guide" title="回到推荐视角">◎</button>
+        <button id="stereo" title="双目 VR 预览">VR</button>
+        <button id="fullscreen" title="全屏">⛶</button>
+      </div>
+    </div>
+    <div class="reticle"></div>
+    <div class="segment" id="segments"></div>
+  </div>
+<script>
+const tour = {payload};
+const canvas = document.getElementById('viewer');
+const stage = document.getElementById('stage');
+const gl = canvas.getContext('webgl', {{ antialias: true }});
+const titleEl = document.getElementById('title');
+const subtitleEl = document.getElementById('subtitle');
+const strip = document.getElementById('segments');
+let current = 0;
+let yaw = tour[0]?.yaw || 0;
+let pitch = tour[0]?.pitch || 0;
+let targetYaw = yaw;
+let targetPitch = pitch;
+let playing = false;
+let stereo = false;
+let dragging = false;
+let lastX = 0;
+let lastY = 0;
+let texture = null;
+let imageVersion = 0;
+let lastAdvance = performance.now();
+
+if (!gl || tour.length === 0) {{
+  stage.innerHTML = '<div style="color:#f8fafc;padding:24px">当前数据无法打开全景浏览。</div>';
+}} else {{
+  init();
+  requestAnimationFrame(draw);
+}}
+
+function shader(type, source) {{
+  const item = gl.createShader(type);
+  gl.shaderSource(item, source);
+  gl.compileShader(item);
+  if (!gl.getShaderParameter(item, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(item));
+  return item;
+}}
+
+function init() {{
+  const vertex = shader(gl.VERTEX_SHADER, `
+    attribute vec2 position;
+    varying vec2 uv;
+    void main() {{
+      uv = position * 0.5 + 0.5;
+      gl_Position = vec4(position, 0.0, 1.0);
+    }}
+  `);
+  const fragment = shader(gl.FRAGMENT_SHADER, `
+    precision highp float;
+    varying vec2 uv;
+    uniform sampler2D pano;
+    uniform float yaw;
+    uniform float pitch;
+    uniform float aspect;
+    uniform float fov;
+    uniform float stereoOffset;
+    const float PI = 3.141592653589793;
+    mat3 rotY(float a) {{
+      float s = sin(a), c = cos(a);
+      return mat3(c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c);
+    }}
+    mat3 rotX(float a) {{
+      float s = sin(a), c = cos(a);
+      return mat3(1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c);
+    }}
+    void main() {{
+      vec2 p = uv * 2.0 - 1.0;
+      p.x *= aspect;
+      vec3 dir = normalize(vec3(p * tan(fov * 0.5), -1.0));
+      dir = rotY(yaw + stereoOffset) * rotX(pitch) * dir;
+      float lon = atan(dir.x, -dir.z);
+      float lat = asin(clamp(dir.y, -1.0, 1.0));
+      vec2 sampleUv = vec2(0.5 + lon / (2.0 * PI), 0.5 - lat / PI);
+      vec3 color = texture2D(pano, sampleUv).rgb;
+      gl_FragColor = vec4(color, 1.0);
+    }}
+  `);
+  const program = gl.createProgram();
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  gl.useProgram(program);
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+  const position = gl.getAttribLocation(program, 'position');
+  gl.enableVertexAttribArray(position);
+  gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+  gl.program = program;
+  gl.uniforms = {{
+    yaw: gl.getUniformLocation(program, 'yaw'),
+    pitch: gl.getUniformLocation(program, 'pitch'),
+    aspect: gl.getUniformLocation(program, 'aspect'),
+    fov: gl.getUniformLocation(program, 'fov'),
+    stereoOffset: gl.getUniformLocation(program, 'stereoOffset'),
+  }};
+  texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  buildStrip();
+  bindEvents();
+  loadFrame(0);
+}}
+
+function buildStrip() {{
+  tour.forEach((item, idx) => {{
+    const button = document.createElement('button');
+    button.innerHTML = `<strong>${{item.label}}</strong><br>${{item.time}}`;
+    button.onclick = () => loadFrame(idx);
+    strip.appendChild(button);
+  }});
+}}
+
+function bindEvents() {{
+  canvas.addEventListener('pointerdown', (event) => {{
+    dragging = true;
+    canvas.classList.add('dragging');
+    lastX = event.clientX;
+    lastY = event.clientY;
+    canvas.setPointerCapture(event.pointerId);
+  }});
+  canvas.addEventListener('pointermove', (event) => {{
+    if (!dragging) return;
+    const dx = event.clientX - lastX;
+    const dy = event.clientY - lastY;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    targetYaw -= dx * 0.006;
+    targetPitch = clamp(targetPitch - dy * 0.006, -1.35, 1.35);
+  }});
+  canvas.addEventListener('pointerup', () => {{
+    dragging = false;
+    canvas.classList.remove('dragging');
+  }});
+  canvas.addEventListener('wheel', (event) => event.preventDefault(), {{ passive: false }});
+  document.getElementById('prev').onclick = () => loadFrame((current - 1 + tour.length) % tour.length);
+  document.getElementById('play').onclick = () => {{
+    playing = !playing;
+    document.getElementById('play').textContent = playing ? 'Ⅱ' : '▶';
+    lastAdvance = performance.now();
+  }};
+  document.getElementById('guide').onclick = () => guideToCurrent();
+  document.getElementById('stereo').onclick = () => {{
+    stereo = !stereo;
+    document.getElementById('stereo').style.background = stereo ? 'rgba(37,99,235,0.82)' : 'rgba(8,13,24,0.74)';
+  }};
+  document.getElementById('fullscreen').onclick = () => stage.requestFullscreen?.();
+}}
+
+function loadFrame(idx) {{
+  current = idx;
+  const item = tour[current];
+  titleEl.textContent = item.label;
+  subtitleEl.textContent = item.time + ' · 拖拽画面改变视角';
+  [...strip.children].forEach((button, buttonIdx) => button.classList.toggle('active', buttonIdx === idx));
+  const img = new Image();
+  const version = ++imageVersion;
+  img.onload = () => {{
+    if (version !== imageVersion) return;
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
+  }};
+  img.src = item.src;
+  guideToCurrent();
+}}
+
+function guideToCurrent() {{
+  targetYaw = tour[current].yaw;
+  targetPitch = clamp(tour[current].pitch, -1.35, 1.35);
+}}
+
+function resize() {{
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+  const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+  if (canvas.width !== width || canvas.height !== height) {{
+    canvas.width = width;
+    canvas.height = height;
+  }}
+}}
+
+function renderEye(x, y, width, height, offset) {{
+  gl.viewport(x, y, width, height);
+  gl.uniform1f(gl.uniforms.yaw, yaw);
+  gl.uniform1f(gl.uniforms.pitch, pitch);
+  gl.uniform1f(gl.uniforms.aspect, width / Math.max(height, 1));
+  gl.uniform1f(gl.uniforms.fov, 1.15);
+  gl.uniform1f(gl.uniforms.stereoOffset, offset);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+}}
+
+function draw(now) {{
+  resize();
+  yaw += angleDelta(targetYaw, yaw) * 0.12;
+  pitch += (targetPitch - pitch) * 0.12;
+  gl.clearColor(0.02, 0.03, 0.05, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (stereo) {{
+    const half = Math.floor(canvas.width / 2);
+    renderEye(0, 0, half, canvas.height, -0.025);
+    renderEye(half, 0, canvas.width - half, canvas.height, 0.025);
+  }} else {{
+    renderEye(0, 0, canvas.width, canvas.height, 0);
+  }}
+  if (playing && now - lastAdvance > 3200) {{
+    loadFrame((current + 1) % tour.length);
+    lastAdvance = now;
+  }}
+  requestAnimationFrame(draw);
+}}
+
+function angleDelta(a, b) {{
+  return Math.atan2(Math.sin(a - b), Math.cos(a - b));
+}}
+
+function clamp(value, min, max) {{
+  return Math.max(min, Math.min(max, value));
+}}
+</script>
+</body>
+</html>
+"""
+
+
 st.sidebar.header("参数")
 segment_size = st.sidebar.slider("片段长度（帧）", 4, 24, 8, 2)
 budget_ratio = st.sidebar.slider("摘要比例", 0.05, 0.4, 0.18, 0.01)
@@ -216,7 +623,15 @@ with solution_col:
     st.image(viewport_crop(frame, segments.viewport_xy[segment_idx]), use_container_width=True)
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("2. 系统怎么判断")
+st.subheader("2. 360°/VR 浏览模式")
+tour = vr_tour_frames(video, segments, result)
+if tour:
+    components.html(panorama_viewer_html(tour), height=580)
+else:
+    st.info("当前数据没有 frames 字段，无法打开全景浏览模式。")
+
+st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+st.subheader("3. 系统怎么判断")
 raw_col, heat_col, guide_col = st.columns(3)
 with raw_col:
     st.markdown('<div class="panel-label">原始 ERP</div>', unsafe_allow_html=True)
@@ -232,7 +647,7 @@ with guide_col:
     )
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("3. 摘要结果")
+st.subheader("4. 摘要结果")
 previews = segment_previews(video, segments, result)
 if previews:
     preview_cols = st.columns(min(len(previews), 4))
@@ -254,7 +669,7 @@ with st.expander("查看选中片段明细"):
     st.dataframe(selection_table(segments, result), use_container_width=True, hide_index=True)
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("4. 方法对比")
+st.subheader("5. 方法对比")
 st.plotly_chart(metrics_figure(metrics), use_container_width=True)
 st.dataframe(metrics, use_container_width=True, hide_index=True)
 
