@@ -1,0 +1,23 @@
+name: s3-360
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - h5py
+  - matplotlib
+  - plotly
+  - streamlit
+  - pillow
+  - pytest
+  - pip
+  - setuptools
+  - wheel
+  - pip:
+      - imageio
+      - imageio-ffmpeg
+      - yt-dlp
+      - -e .

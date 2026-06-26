@@ -1,0 +1,40 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Experiment",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/run_experiment.py",
+      "args": [
+        "--input",
+        "data/shd360_sample/shd360_tiny.npz",
+        "--budget-ratio",
+        "0.22"
+      ],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Make SHD360 Sample",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/make_shd360_sample.py",
+      "args": [
+        "--out",
+        "data/shd360_sample/shd360_tiny.npz"
+      ],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Make Demo Data",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/make_demo_data.py",
+      "args": [
+        "--out",
+        "data/demo/demo_video.npz"
+      ],
+      "console": "integratedTerminal"
+    }
+  ]
+}

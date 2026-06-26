@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Create or Update Conda Env",
+      "type": "shell",
+      "command": "conda env update -f environment.yml --prune",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Make Demo Data",
+      "type": "shell",
+      "command": "conda run -n s3-360 python scripts/make_demo_data.py --out data/demo/demo_video.npz",
+      "problemMatcher": []
+    },
+    {
+      "label": "Make SHD360 Sample",
+      "type": "shell",
+      "command": "conda run -n s3-360 python scripts/make_shd360_sample.py --out data/shd360_sample/shd360_tiny.npz",
+      "problemMatcher": []
+    },
+    {
+      "label": "Convert Real 360 Video",
+      "type": "shell",
+      "command": "conda run -n s3-360 python scripts/make_real360_sample.py --video-path data/raw/videos/example_360.mp4 --out data/real360_sample/example_360.npz",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Experiment",
+      "type": "shell",
+      "command": "conda run -n s3-360 python scripts/run_experiment.py --input data/shd360_sample/shd360_tiny.npz --budget-ratio 0.22 --video",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Streamlit App",
+      "type": "shell",
+      "command": "conda run -n s3-360 streamlit run app.py --server.port 8501 --server.address 127.0.0.1",
+      "problemMatcher": [],
+      "isBackground": true
+    }
+  ]
+}
