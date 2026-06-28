@@ -22,6 +22,7 @@ def summarize_all(segments: SegmentTable, budget_ratio: float = 0.18) -> dict[st
         "Importance-only": importance_only(segments, budget_ratio),
         "Saliency+Importance": saliency_importance(segments, budget_ratio),
         "S3-360": s3_360(segments, budget_ratio),
+        "S3-360-Guide": s3_360_guide(segments, budget_ratio),
     }
 
 
@@ -118,6 +119,84 @@ def s3_360(
     )
 
 
+def s3_360_guide(
+    segments: SegmentTable,
+    budget_ratio: float,
+    alpha: float = 0.24,
+    beta: float = 0.26,
+    gamma: float = 0.16,
+    delta: float = 0.12,
+    eta: float = 0.14,
+    theta: float = 0.10,
+    redundancy_weight: float = 0.22,
+    jump_weight: float = 0.10,
+) -> SummaryResult:
+    budget = _budget(segments, budget_ratio)
+    saliency = _norm(segments.saliency_score)
+    importance = estimate_importance(segments.features)
+    features = _l2_normalize(segments.features)
+    view_stability = _view_stability(segments)
+    selected: list[int] = []
+    final_score = np.zeros(segments.num_segments, dtype=np.float32)
+    novelty_trace = np.zeros(segments.num_segments, dtype=np.float32)
+    continuity_trace = np.zeros(segments.num_segments, dtype=np.float32)
+    redundancy_trace = np.zeros(segments.num_segments, dtype=np.float32)
+    event_gain_trace = np.zeros(segments.num_segments, dtype=np.float32)
+    jump_penalty_trace = np.zeros(segments.num_segments, dtype=np.float32)
+
+    for _ in range(budget):
+        candidate_scores = np.full(segments.num_segments, -np.inf, dtype=np.float32)
+        for idx in range(segments.num_segments):
+            if idx in selected:
+                continue
+            novelty, redundancy = _novelty_redundancy(idx, selected, features)
+            continuity = _continuity(idx, selected, segments)
+            event_gain = _event_coverage_gain(idx, selected, segments)
+            jump_penalty = _view_jump_penalty(idx, selected, segments)
+            score = (
+                alpha * saliency[idx]
+                + beta * importance[idx]
+                + gamma * novelty
+                + delta * continuity
+                + eta * event_gain
+                + theta * view_stability[idx]
+                - redundancy_weight * redundancy
+                - jump_weight * jump_penalty
+            )
+            candidate_scores[idx] = score
+        best = int(np.argmax(candidate_scores))
+        selected.append(best)
+        final_score[best] = candidate_scores[best]
+        novelty_trace[best], redundancy_trace[best] = _novelty_redundancy(best, selected[:-1], features)
+        continuity_trace[best] = _continuity(best, selected[:-1], segments)
+        event_gain_trace[best] = _event_coverage_gain(best, selected[:-1], segments)
+        jump_penalty_trace[best] = _view_jump_penalty(best, selected[:-1], segments)
+
+    selected_array = np.asarray(sorted(selected), dtype=np.int32)
+    explain_score = _norm(
+        alpha * saliency
+        + beta * importance
+        + eta * event_gain_trace
+        + theta * view_stability
+        + final_score.clip(min=0)
+    )
+    return SummaryResult(
+        "S3-360-Guide",
+        selected_array,
+        explain_score,
+        {
+            "saliency": saliency,
+            "importance": importance,
+            "novelty": novelty_trace,
+            "continuity": continuity_trace,
+            "event_gain": event_gain_trace,
+            "view_stability": view_stability,
+            "redundancy": redundancy_trace,
+            "view_jump": jump_penalty_trace,
+        },
+    )
+
+
 def estimate_importance(features: np.ndarray) -> np.ndarray:
     normalized = _l2_normalize(features)
     centrality = normalized @ normalized.mean(axis=0)
@@ -142,6 +221,37 @@ def _continuity(idx: int, selected: list[int], segments: SegmentTable) -> float:
     temporal_gap = abs(int(segments.starts[idx]) - int(segments.starts[nearest])) / max(segments.frame_count, 1)
     visual_gap = float(np.linalg.norm(segments.viewport_xy[idx] - segments.viewport_xy[nearest]))
     return float(np.exp(-4.0 * temporal_gap) * np.exp(-1.2 * visual_gap))
+
+
+def _event_coverage_gain(idx: int, selected: list[int], segments: SegmentTable) -> float:
+    if segments.event_ids is None:
+        return 0.5
+    event_id = int(segments.event_ids[idx])
+    if event_id <= 0:
+        return 0.25
+    selected_events = {int(segments.event_ids[item]) for item in selected if int(segments.event_ids[item]) > 0}
+    return 1.0 if event_id not in selected_events else 0.2
+
+
+def _view_stability(segments: SegmentTable, window: int = 2) -> np.ndarray:
+    stability = np.ones(segments.num_segments, dtype=np.float32)
+    for idx in range(segments.num_segments):
+        start = max(0, idx - window)
+        end = min(segments.num_segments, idx + window + 1)
+        local = segments.viewport_xy[start:end]
+        if len(local) < 2:
+            stability[idx] = 1.0
+            continue
+        jumps = np.linalg.norm(np.diff(local, axis=0), axis=1)
+        stability[idx] = float(np.exp(-3.0 * np.mean(jumps)))
+    return stability
+
+
+def _view_jump_penalty(idx: int, selected: list[int], segments: SegmentTable) -> float:
+    if not selected:
+        return 0.0
+    nearest = min(selected, key=lambda item: abs(item - idx))
+    return float(np.linalg.norm(segments.viewport_xy[idx] - segments.viewport_xy[nearest]))
 
 
 def _budget(segments: SegmentTable, budget_ratio: float) -> int:

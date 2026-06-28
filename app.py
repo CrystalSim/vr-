@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import base64
 import json
+import sys
 from pathlib import Path
 from io import BytesIO
 from tempfile import NamedTemporaryFile
 from types import SimpleNamespace
+
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import streamlit as st
@@ -561,7 +566,7 @@ segment_size = st.sidebar.slider("片段长度（帧）", 4, 24, 8, 2)
 budget_ratio = st.sidebar.slider("摘要比例", 0.05, 0.4, 0.18, 0.01)
 method_name = st.sidebar.selectbox(
     "展示方法",
-    ["S3-360", "Saliency+Importance", "Importance-only", "Saliency-only", "Uniform"],
+    ["S3-360-Guide", "S3-360", "Saliency+Importance", "Importance-only", "Saliency-only", "Uniform"],
 )
 st.sidebar.header("真实视频入口")
 uploaded_video = st.sidebar.file_uploader(
@@ -599,6 +604,11 @@ st.markdown(
     f'<div class="source-line">当前样本：<b>{source_text}</b>{note_text}</div>',
     unsafe_allow_html=True,
 )
+if method_name == "S3-360-Guide":
+    st.info(
+        "改进方法 S3-360-Guide 在原 S3-360 的基础上加入事件覆盖增益和视角稳定性约束，"
+        "让摘要不仅保留关键片段，也更适合连续导览观看。"
+    )
 
 metric_row = metrics.set_index("method").loc[method_name]
 metric_cols = st.columns(5)

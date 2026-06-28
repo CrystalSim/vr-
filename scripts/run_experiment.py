@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 
 from s3_360.data import load_video
 from s3_360.evaluation import evaluate_all, selection_table
@@ -36,8 +40,8 @@ def main() -> None:
             video.frames,
             video.saliency,
             segments,
-            results["S3-360"],
-            out_dir / "s3_360_summary.gif",
+            results["S3-360-Guide"],
+            out_dir / "s3_360_guide_summary.gif",
         )
 
     print(metrics.to_string(index=False))
