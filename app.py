@@ -17,12 +17,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image, ImageDraw
 
-from s3_360.data import generate_demo_video, load_video, save_npz
-from s3_360.evaluation import evaluate_all, selection_table
 from s3_360.methods import summarize_all
 from s3_360.segmentation import make_segments
 from s3_360.video import write_storyboard_video
-from s3_360.visualization import metrics_figure, overlay_heatmap, timeline_figure, viewport_box
+from s3_360.visualization import overlay_heatmap, viewport_box
 from scripts.make_real360_sample import from_video_file
 
 
@@ -69,33 +67,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
-
-def cached_default_data() -> str:
-    real360_path = Path("data/real360_sample/real360_tennis.npz")
-    if real360_path.exists():
-        return str(real360_path)
-    shd360_path = Path("data/shd360_sample/shd360_tiny.npz")
-    if shd360_path.exists():
-        return str(shd360_path)
-    path = Path("data/demo/demo_video.npz")
-    if not path.exists():
-        save_npz(generate_demo_video(), path)
-    return str(path)
-
-
-def load_from_upload() -> str | None:
-    uploaded = st.sidebar.file_uploader(
-        "实验数据文件（NPZ / HDF5）",
-        type=["npz", "h5", "hdf5"],
-        key="data_upload",
-    )
-    if uploaded is None:
-        return None
-    suffix = Path(uploaded.name).suffix
-    with NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(uploaded.getbuffer())
-        return tmp.name
 
 
 @st.cache_data(show_spinner=False)
@@ -156,6 +127,53 @@ def segment_previews(video, segments, result, max_items: int = 6) -> list[tuple[
             )
         )
     return previews
+
+
+def write_original_preview_video(
+    frames: np.ndarray,
+    out_path: str | Path,
+    fps: float = 8.0,
+    max_frames: int = 96,
+) -> Path:
+    out = Path(out_path)
+    if out.suffix.lower() != ".gif":
+        out = out.with_suffix(".gif")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if len(frames) > max_frames:
+        indices = np.linspace(0, len(frames) - 1, max_frames, dtype=int)
+        chosen = frames[indices]
+    else:
+        chosen = frames
+    rendered = [Image.fromarray(frame.astype(np.uint8)).convert("RGB") for frame in chosen]
+    duration_ms = max(int(1000 / fps), 1)
+    rendered[0].save(
+        out,
+        save_all=True,
+        append_images=rendered[1:],
+        duration=duration_ms,
+        loop=0,
+        optimize=True,
+    )
+    return out
+
+
+def summary_explanation(segments, result, method_name: str) -> str:
+    selected_times = []
+    for segment_idx in result.selected[:6]:
+        start_sec = float(segments.starts[segment_idx] / segments.fps)
+        end_sec = float(segments.ends[segment_idx] / segments.fps)
+        selected_times.append(f"{start_sec:.1f}s-{end_sec:.1f}s")
+    suffix = "" if len(result.selected) <= 6 else f" 等 {len(result.selected)} 个片段"
+    method_note = (
+        "改进方法 S3-360-Guide 额外考虑事件覆盖和视角稳定性，让摘要更适合连续导览观看。"
+        if method_name == "S3-360-Guide"
+        else "该方法根据当前评分策略选择最适合保留的片段。"
+    )
+    return (
+        "系统先从上传的 360°视频中抽取采样帧，再估计每帧的显著区域和轻量视觉特征；"
+        "随后把视频切成短片段，选择信息量高、重复少、观看更连贯的片段组成摘要。"
+        f"本次摘要选中了 {', '.join(selected_times)}{suffix}。{method_note}"
+    )
 
 
 def image_data_url(image: Image.Image, max_width: int = 1024) -> str:
@@ -561,43 +579,42 @@ function clamp(value, min, max) {{
 """
 
 
-st.sidebar.header("参数")
-segment_size = st.sidebar.slider("片段长度（帧）", 4, 24, 8, 2)
-budget_ratio = st.sidebar.slider("摘要比例", 0.05, 0.4, 0.18, 0.01)
-method_name = st.sidebar.selectbox(
-    "展示方法",
-    ["S3-360-Guide", "S3-360", "Saliency+Importance", "Importance-only", "Saliency-only", "Uniform"],
-)
-st.sidebar.header("真实视频入口")
+st.sidebar.header("上传视频")
 uploaded_video = st.sidebar.file_uploader(
     "真实 360°视频（MP4 / MOV）",
     type=["mp4", "mov", "m4v"],
     key="video_upload",
 )
+
+st.sidebar.header("摘要设置")
+method_name = st.sidebar.selectbox(
+    "摘要方法",
+    ["S3-360-Guide", "S3-360", "Saliency+Importance", "Importance-only", "Saliency-only", "Uniform"],
+)
+segment_size = st.sidebar.slider("片段长度（帧）", 4, 24, 8, 2)
+budget_ratio = st.sidebar.slider("摘要比例", 0.05, 0.4, 0.18, 0.01)
 video_max_frames = st.sidebar.slider("视频抽帧数量", 48, 180, 96, 12)
 video_sample_step = st.sidebar.slider("抽帧步长", 4, 30, 12, 2)
 
-data_path = load_from_upload()
-if uploaded_video is not None:
-    with st.spinner("正在抽取真实 360°视频帧并生成轻量特征..."):
-        video = convert_uploaded_video(
-            uploaded_video.name,
-            uploaded_video.getvalue(),
-            video_max_frames,
-            video_sample_step,
-        )
-elif data_path:
-    video = load_video(data_path)
-else:
-    video = load_video(cached_default_data())
+st.title("S³-360 360°视频摘要与智能导览")
+st.caption("上传一段 360°视频，系统会自动提取关键片段，生成摘要视频，并提供可拖拽的 360°导览视角。")
+
+if uploaded_video is None:
+    st.info("请在左侧上传 MP4 / MOV / M4V 格式的 360°视频。上传后页面会展示原始视频、摘要视频和 360°/VR 导览。")
+    st.stop()
+
+with st.spinner("正在抽取真实 360°视频帧并生成轻量特征..."):
+    video = convert_uploaded_video(
+        uploaded_video.name,
+        uploaded_video.getvalue(),
+        video_max_frames,
+        video_sample_step,
+    )
 
 segments = make_segments(video, segment_size=segment_size)
 results = summarize_all(segments, budget_ratio=budget_ratio)
-metrics = evaluate_all(segments, results)
 result = results[method_name]
 
-st.title("S³-360 360°视频智能导览与时空摘要")
-st.caption("把难以完整观看的全景视频，转换成普通屏幕上更容易理解的导览摘要")
 source_text = video.source or video.name
 note_text = f"。{video.note}" if video.note else ""
 st.markdown(
@@ -610,30 +627,33 @@ if method_name == "S3-360-Guide":
         "让摘要不仅保留关键片段，也更适合连续导览观看。"
     )
 
-metric_row = metrics.set_index("method").loc[method_name]
-metric_cols = st.columns(5)
-metric_cols[0].metric("F-score", f"{metric_row['f_score']:.3f}")
-metric_cols[1].metric("Precision", f"{metric_row['precision']:.3f}")
-metric_cols[2].metric("Recall", f"{metric_row['recall']:.3f}")
-metric_cols[3].metric("重复率", f"{metric_row['repeat_rate']:.3f}")
-metric_cols[4].metric("事件覆盖率", f"{metric_row['event_coverage']:.3f}")
+safe_video_name = video.name.lower().replace(" ", "_").replace("/", "_")
+safe_method_name = method_name.lower().replace("+", "_").replace("-", "_").replace(" ", "_")
+original_out = Path("outputs/demo") / f"{safe_video_name}_original.gif"
+summary_out = Path("outputs/demo") / f"{safe_video_name}_{safe_method_name}_summary.gif"
 
-frame_idx = st.slider("展示帧", 0, video.num_frames - 1, int(video.num_frames * 0.45))
-segment_idx = min(frame_idx // segment_size, segments.num_segments - 1)
-frame = video.frames[frame_idx] if video.frames is not None else fallback_frame(video)
-
-st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("1. 问题对比")
-problem_col, solution_col = st.columns([1.18, 1])
-with problem_col:
-    st.markdown('<div class="story-label">原始 360°全景画面</div>', unsafe_allow_html=True)
-    st.image(raw_frame(frame), use_container_width=True)
-with solution_col:
-    st.markdown('<div class="story-label">系统导出的普通屏幕视角</div>', unsafe_allow_html=True)
-    st.image(viewport_crop(frame, segments.viewport_xy[segment_idx]), use_container_width=True)
+with st.spinner("正在生成原始视频和摘要视频预览..."):
+    original_gif = write_original_preview_video(video.frames, original_out)
+    summary_gif = write_storyboard_video(
+        video.frames,
+        video.saliency,
+        segments,
+        result,
+        summary_out,
+    )
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("2. 360°/VR 浏览模式")
+st.subheader("1. 原始视频与摘要视频")
+original_col, summary_col = st.columns(2)
+with original_col:
+    st.markdown('<div class="story-label">原始 360°视频</div>', unsafe_allow_html=True)
+    st.image(str(original_gif), use_container_width=True)
+with summary_col:
+    st.markdown('<div class="story-label">提取摘要后的视频</div>', unsafe_allow_html=True)
+    st.image(str(summary_gif), use_container_width=True)
+
+st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+st.subheader("2. 360°/VR 导览模式")
 tour = vr_tour_frames(video, segments, result)
 if tour:
     components.html(panorama_viewer_html(tour), height=580)
@@ -641,58 +661,9 @@ else:
     st.info("当前数据没有 frames 字段，无法打开全景浏览模式。")
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("3. 系统怎么判断")
-raw_col, heat_col, guide_col = st.columns(3)
-with raw_col:
-    st.markdown('<div class="panel-label">原始 ERP</div>', unsafe_allow_html=True)
-    st.image(raw_frame(frame), use_container_width=True)
-with heat_col:
-    st.markdown('<div class="panel-label">显著性热力图</div>', unsafe_allow_html=True)
-    st.image(heatmap_image(video.saliency[frame_idx]), use_container_width=True)
-with guide_col:
-    st.markdown('<div class="panel-label">选中视角框</div>', unsafe_allow_html=True)
-    st.image(
-        guided_frame(frame, video.saliency[frame_idx], segments.viewport_xy[segment_idx]),
-        use_container_width=True,
-    )
-
-st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("4. 摘要结果")
-previews = segment_previews(video, segments, result)
-if previews:
-    preview_cols = st.columns(min(len(previews), 4))
-    for idx, (selected_segment, image) in enumerate(previews):
-        with preview_cols[idx % len(preview_cols)]:
-            start_sec = segments.starts[selected_segment] / segments.fps
-            end_sec = segments.ends[selected_segment] / segments.fps
-            st.image(
-                image,
-                caption=f"片段 {selected_segment} | {start_sec:.1f}s-{end_sec:.1f}s",
-                use_container_width=True,
-            )
-else:
-    st.info("当前数据没有 frames 字段，无法显示缩略图。")
-
-st.plotly_chart(timeline_figure(segments, result), use_container_width=True)
-
-with st.expander("查看选中片段明细"):
-    st.dataframe(selection_table(segments, result), use_container_width=True, hide_index=True)
-
-st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("5. 方法对比")
-st.plotly_chart(metrics_figure(metrics), use_container_width=True)
-st.dataframe(metrics, use_container_width=True, hide_index=True)
-
-st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("摘要动图")
-if video.frames is None:
-    st.info("当前数据没有 frames 字段，无法导出可视化动图。")
-elif st.button("生成当前方法摘要 GIF"):
-    out = write_storyboard_video(
-        video.frames,
-        video.saliency,
-        segments,
-        result,
-        Path("outputs") / f"{method_name.lower().replace(' ', '_')}_summary.gif",
-    )
-    st.image(str(out), use_container_width=True)
+st.subheader("3. 解释")
+st.write(summary_explanation(segments, result, method_name))
+st.write(
+    "摘要视频中的热力颜色表示系统估计的注意力区域，白色框表示推荐观看视角。"
+    "下方的 360°/VR 导览保留了第二次提交新增的交互功能：可以拖拽视角、自动导览、回到推荐视角、切换 VR 预览和全屏观看。"
+)
