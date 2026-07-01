@@ -59,33 +59,6 @@
 - 增加了多方法对比、事件覆盖率、重复率和视角跳变等指标。
 - 支持上传真实 360°视频，也支持 NPZ/HDF5 实验数据。
 
-## 四人工作量拆分
-
-### 成员 A：论文复现与系统建模
-
-- 阅读论文和 CA-SUM-360 仓库。
-- 梳理 Saliency Maps、2D Event Video、Final Summary 三阶段流程。
-- 完成视频片段划分、特征读取、显著性和重要性打分。
-
-### 成员 B：2D Event Video 生成
-
-- 根据显著区域确定推荐视角。
-- 将 360° ERP 帧裁剪成普通 16:9 画面。
-- 实现 Step 2 的 event video MP4 导出。
-
-### 成员 C：时间摘要与实验评估
-
-- 实现 Uniform、Saliency-only、Importance-only、Saliency+Importance、S³-360 等对比方法。
-- 完成 Precision、Recall、F-score、重复率、事件覆盖率、视角跳变等指标。
-- 实现最终 summary video 和 storyboard GIF 导出。
-
-### 成员 D：系统包装与交互展示
-
-- 搭建 Streamlit 可视化页面。
-- 实现 360°/VR 交互预览模式。
-- 整理 README、演示流程和答辩说明。
-- 准备测试视频和最终展示材料。
-
 ## 推荐答辩演示顺序
 
 1. 先说明痛点：360°视频内容多，用户不知道看哪里，也不想完整看完。

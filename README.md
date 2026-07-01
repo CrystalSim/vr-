@@ -1,6 +1,6 @@
 # S³-360：360°视频智能导览与时空摘要系统
 
-本项目面向四人大作业，将论文 **An Integrated System for Spatio-Temporal Summarization of 360-degrees Videos** 和开源项目 **CA-SUM-360** 的三阶段思想包装成一个可运行、可演示、可导出结果的系统。项目不只停留在复现算法，而是补充了交互式 VR 预览、2D event video 生成、最终短视频导出和完整可视化说明。
+本项目将论文 **An Integrated System for Spatio-Temporal Summarization of 360-degrees Videos** 和开源项目 **CA-SUM-360** 的三阶段思想包装成一个可运行、可演示、可导出结果的系统。项目不只停留在复现算法，而是补充了交互式 VR 预览、2D event video 生成、最终短视频导出和完整可视化说明。
 
 系统主线：
 
@@ -64,7 +64,7 @@ python scripts/run_strict_experiment.py \
   --budget-ratio 0.18
 ```
 
-进一步展示实验工作量时，可以运行完整 benchmark。它会加入 Random、MMR 和
+进一步展示实验完整性时，可以运行完整 benchmark。它会加入 Random、MMR 和
 S³-360/S³-360-Guide 消融变体，在多个摘要比例下批量评估，并自动导出
 `per_video_metrics.csv`、`summary_metrics.csv`、图表和 `report.md`：
 
@@ -197,16 +197,9 @@ streamlit run app.py
 
 HDF5 读取器会自动尝试常见 key：`features`、`saliency`、`labels`、`gtscore`、`user_summary`、`change_points` 等。
 
-## 7. 四人分工建议
-
-- 成员 A：论文和 CA-SUM-360 复现，对齐三阶段系统流程，负责片段划分、显著性和重要性打分。
-- 成员 B：2D event video 生成，负责显著区域聚合、普通视角自动裁剪和 MP4 导出。
-- 成员 C：最终时间摘要与实验评估，负责方法对比、指标表、最终 summary video 和 GIF 导出。
-- 成员 D：系统包装与交互展示，负责 Streamlit 页面、360°/VR 预览、README、答辩材料和演示流程。
-
 更多答辩包装说明见 `docs/project_packaging.md`。
 
-## 8. 项目结构
+## 7. 项目结构
 
 ```text
 .

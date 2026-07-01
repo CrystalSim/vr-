@@ -864,7 +864,7 @@ with st.expander("查看选中片段明细"):
     st.dataframe(selection_table(segments, result), use_container_width=True, hide_index=True)
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("方法对比与工作量说明")
+st.subheader("方法对比与系统说明")
 st.plotly_chart(metrics_figure(metrics), use_container_width=True)
 st.dataframe(metrics, use_container_width=True, hide_index=True)
 
@@ -873,14 +873,4 @@ with st.expander("系统解释"):
     st.write(
         "摘要视频中的热力颜色表示系统估计的注意力区域，白色框表示推荐观看视角。"
         "360°/VR 导览可以拖拽视角、自动导览、回到推荐视角、切换 VR 预览和全屏观看。"
-    )
-
-with st.expander("四人分工如何体现"):
-    st.markdown(
-        """
-        - 成员 A：复现并整理 CA-SUM-360 / S³-360 的三阶段系统流程，完成片段划分、显著性和重要性打分。
-        - 成员 B：完成 360°视频到普通 2D event video 的自动视角裁剪和 MP4 导出。
-        - 成员 C：完成 S3-360-Guide 时间摘要、方法对比指标、短视频/GIF 导出和实验结果表。
-        - 成员 D：完成 Streamlit 可视化、交互式 360°/VR 预览、README 和答辩包装材料。
-        """
     )
