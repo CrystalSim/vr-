@@ -17,6 +17,7 @@ class VideoData:
     user_summaries: np.ndarray | None = None
     event_ids: np.ndarray | None = None
     frames: np.ndarray | None = None
+    frame_times: np.ndarray | None = None
     fps: float = 2.0
     source: str = "demo"
     note: str = ""
@@ -108,6 +109,8 @@ def save_npz(video: VideoData, path: str | Path) -> None:
         payload["event_ids"] = video.event_ids
     if video.frames is not None:
         payload["frames"] = video.frames
+    if video.frame_times is not None:
+        payload["frame_times"] = video.frame_times
     np.savez_compressed(out, **payload)
 
 
@@ -155,6 +158,11 @@ def _load_npz(path: Path) -> VideoData:
             ),
             event_ids=np.asarray(data["event_ids"], dtype=np.int32) if "event_ids" in data else None,
             frames=np.asarray(data["frames"], dtype=np.uint8) if "frames" in data else None,
+            frame_times=(
+                np.asarray(data["frame_times"], dtype=np.float32)
+                if "frame_times" in data
+                else None
+            ),
             fps=fps,
             source=source,
             note=note,
@@ -184,6 +192,7 @@ def _load_hdf5(path: Path, group_key: str | None = None) -> VideoData:
         change_points = _first_dataset(group, ("change_points", "change_point", "cps"))
         picks = _first_dataset(group, ("picks", "sampled_frames"))
         frames = _first_dataset(group, ("frames", "images", "erp_frames"))
+        frame_times = _first_dataset(group, ("frame_times", "timestamps", "time", "times"))
         fps_data = _first_dataset(group, ("fps",))
 
     if features is None:
@@ -209,6 +218,8 @@ def _load_hdf5(path: Path, group_key: str | None = None) -> VideoData:
         event_ids = _event_ids_from_change_points(change_points, frame_count, picks)
     elif event_ids is not None:
         event_ids = _align_to_features(event_ids, picks, frame_count)
+    if frame_times is not None:
+        frame_times = _align_to_features(frame_times, picks, frame_count)
     fps = float(np.asarray(fps_data).reshape(-1)[0]) if fps_data is not None else 2.0
 
     return VideoData(
@@ -221,6 +232,7 @@ def _load_hdf5(path: Path, group_key: str | None = None) -> VideoData:
         ),
         event_ids=np.asarray(event_ids, dtype=np.int32) if event_ids is not None else None,
         frames=np.asarray(frames, dtype=np.uint8) if frames is not None else None,
+        frame_times=np.asarray(frame_times, dtype=np.float32) if frame_times is not None else None,
         fps=fps,
     )
 

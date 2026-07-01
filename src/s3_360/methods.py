@@ -26,6 +26,68 @@ def summarize_all(segments: SegmentTable, budget_ratio: float = 0.18) -> dict[st
     }
 
 
+def summarize_benchmark(
+    segments: SegmentTable,
+    budget_ratio: float = 0.18,
+    include_ablations: bool = True,
+) -> dict[str, SummaryResult]:
+    results = {
+        **summarize_all(segments, budget_ratio),
+        "Random": random_sampling(segments, budget_ratio),
+        "MMR": maximal_marginal_relevance(segments, budget_ratio),
+    }
+    if include_ablations:
+        results.update(
+            {
+                "S3-360 w/o saliency": s3_360_ablation(
+                    segments,
+                    budget_ratio,
+                    "S3-360 w/o saliency",
+                    alpha=0.0,
+                    beta=0.42,
+                    gamma=0.24,
+                    delta=0.16,
+                    redundancy_weight=0.28,
+                ),
+                "S3-360 w/o novelty": s3_360_ablation(
+                    segments,
+                    budget_ratio,
+                    "S3-360 w/o novelty",
+                    alpha=0.38,
+                    beta=0.40,
+                    gamma=0.0,
+                    delta=0.16,
+                    redundancy_weight=0.28,
+                ),
+                "S3-360 w/o continuity": s3_360_ablation(
+                    segments,
+                    budget_ratio,
+                    "S3-360 w/o continuity",
+                    alpha=0.36,
+                    beta=0.38,
+                    gamma=0.22,
+                    delta=0.0,
+                    redundancy_weight=0.28,
+                ),
+                "S3-360-Guide w/o event": s3_360_guide_ablation(
+                    segments,
+                    budget_ratio,
+                    "S3-360-Guide w/o event",
+                    eta=0.0,
+                    theta=0.12,
+                ),
+                "S3-360-Guide w/o view": s3_360_guide_ablation(
+                    segments,
+                    budget_ratio,
+                    "S3-360-Guide w/o view",
+                    eta=0.16,
+                    theta=0.0,
+                ),
+            }
+        )
+    return results
+
+
 def uniform_sampling(segments: SegmentTable, budget_ratio: float) -> SummaryResult:
     budget = _budget(segments, budget_ratio)
     if budget == 0:
@@ -44,6 +106,18 @@ def saliency_only(segments: SegmentTable, budget_ratio: float) -> SummaryResult:
     return SummaryResult("Saliency-only", selected, saliency, {"saliency": saliency})
 
 
+def random_sampling(segments: SegmentTable, budget_ratio: float, seed: int = 360) -> SummaryResult:
+    budget = _budget(segments, budget_ratio)
+    rng = np.random.default_rng(seed + segments.num_segments)
+    selected = np.asarray(
+        sorted(rng.choice(segments.num_segments, size=budget, replace=False)),
+        dtype=np.int32,
+    )
+    score = np.zeros(segments.num_segments, dtype=np.float32)
+    score[selected] = 1.0
+    return SummaryResult("Random", selected, score, {"random": score.copy()})
+
+
 def importance_only(segments: SegmentTable, budget_ratio: float) -> SummaryResult:
     importance = estimate_importance(segments.features)
     selected = _top_k(importance, _budget(segments, budget_ratio))
@@ -60,6 +134,47 @@ def saliency_importance(segments: SegmentTable, budget_ratio: float) -> SummaryR
         selected,
         score,
         {"saliency": saliency, "importance": importance},
+    )
+
+
+def maximal_marginal_relevance(
+    segments: SegmentTable,
+    budget_ratio: float,
+    relevance_weight: float = 0.72,
+) -> SummaryResult:
+    budget = _budget(segments, budget_ratio)
+    saliency = _norm(segments.saliency_score)
+    importance = estimate_importance(segments.features)
+    relevance = _norm(0.5 * saliency + 0.5 * importance)
+    features = _l2_normalize(segments.features)
+    selected: list[int] = []
+    score = np.zeros(segments.num_segments, dtype=np.float32)
+    diversity_trace = np.zeros(segments.num_segments, dtype=np.float32)
+
+    for _ in range(budget):
+        candidate_scores = np.full(segments.num_segments, -np.inf, dtype=np.float32)
+        for idx in range(segments.num_segments):
+            if idx in selected:
+                continue
+            redundancy = 0.0
+            if selected:
+                redundancy = float(np.max(features[idx] @ features[np.asarray(selected)].T))
+            diversity = 1.0 - np.clip(redundancy, 0.0, 1.0)
+            candidate_scores[idx] = (
+                relevance_weight * relevance[idx] + (1 - relevance_weight) * diversity
+            )
+        best = int(np.argmax(candidate_scores))
+        selected.append(best)
+        score[best] = candidate_scores[best]
+        diversity_trace[best] = 1.0 if len(selected) == 1 else candidate_scores[best]
+
+    selected_array = np.asarray(sorted(selected), dtype=np.int32)
+    explain_score = _norm(relevance + score.clip(min=0))
+    return SummaryResult(
+        "MMR",
+        selected_array,
+        explain_score,
+        {"saliency": saliency, "importance": importance, "diversity": diversity_trace},
     )
 
 
@@ -117,6 +232,28 @@ def s3_360(
             "redundancy": redundancy_trace,
         },
     )
+
+
+def s3_360_ablation(
+    segments: SegmentTable,
+    budget_ratio: float,
+    name: str,
+    alpha: float,
+    beta: float,
+    gamma: float,
+    delta: float,
+    redundancy_weight: float,
+) -> SummaryResult:
+    result = s3_360(
+        segments,
+        budget_ratio,
+        alpha=alpha,
+        beta=beta,
+        gamma=gamma,
+        delta=delta,
+        redundancy_weight=redundancy_weight,
+    )
+    return SummaryResult(name, result.selected, result.score, result.components)
 
 
 def s3_360_guide(
@@ -195,6 +332,22 @@ def s3_360_guide(
             "view_jump": jump_penalty_trace,
         },
     )
+
+
+def s3_360_guide_ablation(
+    segments: SegmentTable,
+    budget_ratio: float,
+    name: str,
+    eta: float,
+    theta: float,
+) -> SummaryResult:
+    result = s3_360_guide(
+        segments,
+        budget_ratio,
+        eta=eta,
+        theta=theta,
+    )
+    return SummaryResult(name, result.selected, result.score, result.components)
 
 
 def estimate_importance(features: np.ndarray) -> np.ndarray:

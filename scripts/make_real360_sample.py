@@ -66,20 +66,67 @@ def download_video(url: str, out_dir: Path) -> Path:
 def from_video_file(path: Path, args: argparse.Namespace) -> VideoData:
     frames = []
     reader = imageio.get_reader(path)
+    frame_times = []
     try:
-        for idx, frame in enumerate(reader):
-            if idx % args.sample_step != 0:
-                continue
-            frame_image = Image.fromarray(frame[..., :3]).convert("RGB")
-            frame_image = frame_image.resize((args.width, args.height), Image.Resampling.BICUBIC)
-            frames.append(np.asarray(frame_image, dtype=np.uint8))
-            if len(frames) >= args.max_frames:
-                break
+        metadata = reader.get_meta_data()
+        fps = float(metadata.get("fps") or 0.0)
+        frame_count = _frame_count(metadata, fps)
+        if frame_count is not None and fps > 0:
+            target_indices = np.linspace(0, frame_count - 1, min(args.max_frames, frame_count), dtype=int)
+            target_set = set(int(item) for item in target_indices)
+            last_target = int(target_indices[-1])
+            for idx, frame in enumerate(reader):
+                if idx not in target_set:
+                    if idx >= last_target:
+                        break
+                    continue
+                frames.append(_resize_frame(frame, args.width, args.height))
+                frame_times.append(idx / fps)
+                if idx >= last_target:
+                    break
+        else:
+            for idx, frame in enumerate(reader):
+                if idx % args.sample_step != 0:
+                    continue
+                frame_times.append(len(frames) / 4.0)
+                frames.append(_resize_frame(frame, args.width, args.height))
+                if len(frames) >= args.max_frames:
+                    break
     finally:
         reader.close()
     if not frames:
         raise RuntimeError(f"No frames decoded from {path}")
-    return build_video_data(np.asarray(frames, dtype=np.uint8), name=path.stem, source="real 360 video")
+    return build_video_data(
+        np.asarray(frames, dtype=np.uint8),
+        name=path.stem,
+        source="real 360 video",
+        frame_times=np.asarray(frame_times, dtype=np.float32),
+    )
+
+
+def _frame_count(metadata: dict, fps: float) -> int | None:
+    raw_count = metadata.get("nframes")
+    try:
+        count = int(raw_count)
+    except (TypeError, OverflowError, ValueError):
+        count = 0
+    if count > 0 and count < 10**9:
+        return count
+
+    duration = metadata.get("duration")
+    try:
+        seconds = float(duration)
+    except (TypeError, ValueError):
+        return None
+    if fps <= 0 or seconds <= 0:
+        return None
+    return max(int(round(seconds * fps)), 1)
+
+
+def _resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+    frame_image = Image.fromarray(frame[..., :3]).convert("RGB")
+    frame_image = frame_image.resize((width, height), Image.Resampling.BICUBIC)
+    return np.asarray(frame_image, dtype=np.uint8)
 
 
 def from_frames_dir(frames_dir: Path, args: argparse.Namespace) -> VideoData:
@@ -107,6 +154,7 @@ def build_video_data(
     frames: np.ndarray,
     name: str,
     source: str,
+    frame_times: np.ndarray | None = None,
     note: str = "Converted from real 360 footage. Saliency and labels are lightweight demo estimates.",
 ) -> VideoData:
     saliency = estimate_saliency(frames)
@@ -120,6 +168,7 @@ def build_video_data(
         labels=labels,
         event_ids=event_ids,
         frames=frames,
+        frame_times=frame_times,
         fps=4.0,
         source=source,
         note=note,

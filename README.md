@@ -56,6 +56,18 @@ python scripts/run_strict_experiment.py \
   --budget-ratio 0.18
 ```
 
+进一步展示实验工作量时，可以运行完整 benchmark。它会加入 Random、MMR 和
+S³-360/S³-360-Guide 消融变体，在多个摘要比例下批量评估，并自动导出
+`per_video_metrics.csv`、`summary_metrics.csv`、图表和 `report.md`：
+
+```bash
+python scripts/run_full_benchmark.py \
+  --input-dir data/360vsum_official \
+  --out-dir outputs/full_benchmark \
+  --segment-sizes 8 \
+  --budget-ratios 0.15,0.18,0.22
+```
+
 ## 1. 创建 conda 环境
 
 ```bash

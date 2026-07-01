@@ -17,7 +17,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image, ImageDraw
 
-from s3_360.methods import summarize_all
+from s3_360.methods import s3_360_guide
 from s3_360.segmentation import make_segments
 from s3_360.video import write_storyboard_video
 from s3_360.visualization import overlay_heatmap, viewport_box
@@ -160,9 +160,7 @@ def write_original_preview_video(
 def summary_explanation(segments, result, method_name: str) -> str:
     selected_times = []
     for segment_idx in result.selected[:6]:
-        start_sec = float(segments.starts[segment_idx] / segments.fps)
-        end_sec = float(segments.ends[segment_idx] / segments.fps)
-        selected_times.append(f"{start_sec:.1f}s-{end_sec:.1f}s")
+        selected_times.append(segment_time_label(segments, int(segment_idx)))
     suffix = "" if len(result.selected) <= 6 else f" 等 {len(result.selected)} 个片段"
     method_note = (
         "改进方法 S3-360-Guide 额外考虑事件覆盖和视角稳定性，让摘要更适合连续导览观看。"
@@ -174,6 +172,27 @@ def summary_explanation(segments, result, method_name: str) -> str:
         "随后把视频切成短片段，选择信息量高、重复少、观看更连贯的片段组成摘要。"
         f"本次摘要选中了 {', '.join(selected_times)}{suffix}。{method_note}"
     )
+
+
+def segment_time_label(segments, segment_idx: int) -> str:
+    start_sec = float(segments.start_times[segment_idx])
+    end_sec = float(segments.end_times[segment_idx])
+    return f"{format_seconds(start_sec)}-{format_seconds(end_sec)}"
+
+
+def format_seconds(seconds: float) -> str:
+    seconds = max(float(seconds), 0.0)
+    minutes = int(seconds // 60)
+    remaining = seconds - minutes * 60
+    if minutes:
+        return f"{minutes}:{remaining:04.1f}"
+    return f"{remaining:.1f}s"
+
+
+def sampled_duration(video) -> float:
+    if video.frame_times is not None and len(video.frame_times):
+        return float(np.max(video.frame_times))
+    return float(video.num_frames / max(video.fps, 1e-8))
 
 
 def image_data_url(image: Image.Image, max_width: int = 1024) -> str:
@@ -194,12 +213,10 @@ def vr_tour_frames(video, segments, result, max_items: int = 8) -> list[dict[str
     for segment_idx in result.selected[:max_items]:
         frame_idx = int((segments.starts[segment_idx] + segments.ends[segment_idx] - 1) // 2)
         viewport = segments.viewport_xy[segment_idx]
-        start_sec = float(segments.starts[segment_idx] / segments.fps)
-        end_sec = float(segments.ends[segment_idx] / segments.fps)
         tour.append(
             {
                 "label": f"片段 {int(segment_idx)}",
-                "time": f"{start_sec:.1f}s-{end_sec:.1f}s",
+                "time": segment_time_label(segments, int(segment_idx)),
                 "src": image_data_url(raw_frame(video.frames[frame_idx])),
                 "yaw": float((viewport[0] - 0.5) * 2 * np.pi),
                 "pitch": float((0.5 - viewport[1]) * np.pi),
@@ -587,14 +604,12 @@ uploaded_video = st.sidebar.file_uploader(
 )
 
 st.sidebar.header("摘要设置")
-method_name = st.sidebar.selectbox(
-    "摘要方法",
-    ["S3-360-Guide", "S3-360", "Saliency+Importance", "Importance-only", "Saliency-only", "Uniform"],
-)
-segment_size = st.sidebar.slider("片段长度（帧）", 4, 24, 8, 2)
-budget_ratio = st.sidebar.slider("摘要比例", 0.05, 0.4, 0.18, 0.01)
-video_max_frames = st.sidebar.slider("视频抽帧数量", 48, 180, 96, 12)
-video_sample_step = st.sidebar.slider("抽帧步长", 4, 30, 12, 2)
+method_name = "S3-360-Guide"
+st.sidebar.caption("摘要方法：S3-360-Guide")
+segment_size = st.sidebar.slider("片段长度（帧）", 2, 48, 8, 2)
+budget_ratio = st.sidebar.slider("摘要比例", 0.03, 0.7, 0.2, 0.01)
+video_max_frames = st.sidebar.slider("视频抽帧数量", 24, 360, 144, 12)
+video_sample_step = 12
 
 st.title("S³-360 360°视频摘要与智能导览")
 st.caption("上传一段 360°视频，系统会自动提取关键片段，生成摘要视频，并提供可拖拽的 360°导览视角。")
@@ -612,8 +627,7 @@ with st.spinner("正在抽取真实 360°视频帧并生成轻量特征..."):
     )
 
 segments = make_segments(video, segment_size=segment_size)
-results = summarize_all(segments, budget_ratio=budget_ratio)
-result = results[method_name]
+result = s3_360_guide(segments, budget_ratio=budget_ratio)
 
 source_text = video.source or video.name
 note_text = f"。{video.note}" if video.note else ""
@@ -621,11 +635,14 @@ st.markdown(
     f'<div class="source-line">当前样本：<b>{source_text}</b>{note_text}</div>',
     unsafe_allow_html=True,
 )
-if method_name == "S3-360-Guide":
-    st.info(
-        "改进方法 S3-360-Guide 在原 S3-360 的基础上加入事件覆盖增益和视角稳定性约束，"
-        "让摘要不仅保留关键片段，也更适合连续导览观看。"
-    )
+st.caption(
+    f"已从整段视频均匀采样 {video.num_frames} 帧，当前时间轴覆盖到约 "
+    f"{format_seconds(sampled_duration(video))}；摘要时间均按原视频时间显示。"
+)
+st.info(
+    "当前演示固定使用 S3-360-Guide：在原 S3-360 的基础上加入事件覆盖增益和视角稳定性约束，"
+    "让摘要不仅保留关键片段，也更适合连续导览观看。"
+)
 
 safe_video_name = video.name.lower().replace(" ", "_").replace("/", "_")
 safe_method_name = method_name.lower().replace("+", "_").replace("-", "_").replace(" ", "_")
