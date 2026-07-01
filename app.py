@@ -13,7 +13,9 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
 import numpy as np
+import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image, ImageDraw
 
 from s3_360.camera_motion import analyze_camera_motion
@@ -28,6 +30,7 @@ from s3_360.tourguide import (
     tour_report_markdown,
     tour_route_metrics,
 )
+from s3_360.tour import analyze_viewing_trace, guide_points_table, identify_guide_points
 from s3_360.video import write_event_video, write_storyboard_video, write_summary_video
 from s3_360.visualization import (
     guide_path_figure,
@@ -221,8 +224,9 @@ def segment_previews(video, segments, result, max_items: int = 6) -> list[tuple[
     return previews
 
 
-def guide_overview_image(video, segments, result, max_items: int = 8) -> Image.Image:
+def guide_overview_image(video, segments, result, guide_points=None, max_items: int = 8) -> Image.Image:
     selected = [int(item) for item in result.selected[:max_items]]
+    point_by_segment = {point.segment: point for point in (guide_points or [])}
     if video.frames is None or not selected:
         base = fallback_frame(video)
     else:
@@ -261,13 +265,14 @@ def guide_overview_image(video, segments, result, max_items: int = 8) -> Image.I
             fill=(255, 255, 255, 255),
         )
         time_label = format_seconds(float(segments.start_times[segment_idx]))
+        point_label = f"GP{order}"
         draw.rounded_rectangle(
-            (x + 14, y - 28, x + 112, y - 5),
+            (x + 14, y - 28, x + 134, y - 5),
             radius=6,
             fill=(15, 23, 42, 210),
             outline=(148, 163, 184, 180),
         )
-        draw.text((x + 21, y - 24), f"S{segment_idx} · {time_label}", fill=(248, 250, 252, 255))
+        draw.text((x + 21, y - 24), f"{point_label} · {time_label}", fill=(248, 250, 252, 255))
 
     draw.rounded_rectangle((14, 14, 310, 52), radius=8, fill=(15, 23, 42, 218))
     draw.text((26, 25), "Recommended VR Guide Path", fill=(248, 250, 252, 255))
@@ -341,6 +346,51 @@ def tour_route_map_image(video, points, max_items: int = 12) -> Image.Image:
     draw.rounded_rectangle((14, 14, 362, 58), radius=8, fill=(15, 23, 42, 224))
     draw.text((26, 24), "S3-360-TourGuide Route Map", fill=(248, 250, 252, 255))
     draw.text((26, 40), "ERP panorama coordinates: yaw / pitch / turn angle", fill=(191, 219, 254, 255))
+    return image
+
+
+def tour_map_image(guide_points, width: int = 1200, height: int = 520) -> Image.Image:
+    image = Image.new("RGB", (width, height), (241, 245, 249))
+    draw = ImageDraw.Draw(image, "RGBA")
+    draw.rectangle((0, 0, width, height), fill=(239, 246, 255, 255))
+    draw.rectangle((0, int(height * 0.64), width, height), fill=(220, 252, 231, 255))
+    draw.rectangle((0, 0, width, int(height * 0.20)), fill=(219, 234, 254, 255))
+
+    path = [
+        (0.08, 0.72),
+        (0.22, 0.48),
+        (0.38, 0.60),
+        (0.54, 0.36),
+        (0.70, 0.52),
+        (0.86, 0.32),
+        (0.93, 0.58),
+        (0.78, 0.73),
+    ]
+    points = []
+    for idx, _point in enumerate(guide_points):
+        x_norm, y_norm = path[idx % len(path)]
+        x = int(x_norm * width)
+        y = int(y_norm * height)
+        points.append((x, y))
+
+    for idx, (start, end) in enumerate(zip(points[:-1], points[1:], strict=True), start=1):
+        _draw_arrow(draw, start, end, fill=(37, 99, 235, 220), width=6)
+        mid = ((start[0] + end[0]) // 2, (start[1] + end[1]) // 2)
+        draw.rounded_rectangle((mid[0] - 34, mid[1] - 15, mid[0] + 34, mid[1] + 15), radius=7, fill=(255, 255, 255, 225))
+        draw.text((mid[0] - 24, mid[1] - 7), f"Turn {idx}", fill=(30, 64, 175, 255))
+
+    for point, xy in zip(guide_points, points, strict=True):
+        x, y = xy
+        radius = 26
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=(249, 115, 22, 245))
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), outline=(255, 255, 255, 255), width=4)
+        label = f"GP{point.order}"
+        draw.text((x - 16, y - 7), label, fill=(255, 255, 255, 255))
+        draw.rounded_rectangle((x - 50, y + 32, x + 50, y + 58), radius=7, fill=(15, 23, 42, 215))
+        draw.text((x - 37, y + 40), point.time_label, fill=(248, 250, 252, 255))
+
+    draw.rounded_rectangle((24, 24, 390, 70), radius=10, fill=(15, 23, 42, 225))
+    draw.text((42, 40), "Tour Map: Guide Points and Route Order", fill=(248, 250, 252, 255))
     return image
 
 
@@ -419,7 +469,11 @@ def summary_explanation(segments, result, method_name: str) -> str:
     method_note = (
         "改进方法 S3-360-Guide 额外考虑事件覆盖和视角稳定性，让摘要更适合连续导览观看。"
         if method_name == "S3-360-Guide"
-        else "该方法根据当前评分策略选择最适合保留的片段。"
+        else (
+            "S3-360-TourGuide 会把选中片段组织为导览点路线，优先兼顾景点覆盖、路线推进和转向舒适度。"
+            if method_name == "S3-360-TourGuide"
+            else "该方法根据当前评分策略选择最适合保留的片段。"
+        )
     )
     return (
         "系统先从上传的 360°视频中抽取采样帧，再估计每帧的显著区域和轻量视觉特征；"
@@ -487,17 +541,20 @@ def image_data_url(image: Image.Image, max_width: int = 1024) -> str:
     return f"data:image/jpeg;base64,{encoded}"
 
 
-def vr_tour_frames(video, segments, result, max_items: int = 8) -> list[dict[str, object]]:
+def vr_tour_frames(video, segments, result, guide_points=None, max_items: int = 8) -> list[dict[str, object]]:
     if video.frames is None:
         return []
     tour = []
+    point_by_segment = {point.segment: point for point in (guide_points or [])}
     for segment_idx in result.selected[:max_items]:
+        segment_idx = int(segment_idx)
+        point = point_by_segment.get(segment_idx)
         frame_idx = int((segments.starts[segment_idx] + segments.ends[segment_idx] - 1) // 2)
         viewport = segments.viewport_xy[segment_idx]
         tour.append(
             {
-                "label": f"片段 {int(segment_idx)}",
-                "time": segment_time_label(segments, int(segment_idx)),
+                "label": point.name if point is not None else f"导览点 {len(tour) + 1}",
+                "time": point.time_label if point is not None else segment_time_label(segments, int(segment_idx)),
                 "src": image_data_url(raw_frame(video.frames[frame_idx])),
                 "yaw": float((viewport[0] - 0.5) * 2 * np.pi),
                 "pitch": float((0.5 - viewport[1]) * np.pi),
@@ -506,16 +563,18 @@ def vr_tour_frames(video, segments, result, max_items: int = 8) -> list[dict[str
     return tour
 
 
-def guided_video_chapters(segments, result) -> list[dict[str, object]]:
+def guided_video_chapters(segments, result, guide_points=None) -> list[dict[str, object]]:
     chapters = []
+    point_by_segment = {point.segment: point for point in (guide_points or [])}
     for order, segment_idx in enumerate(result.selected, start=1):
         segment_idx = int(segment_idx)
+        point = point_by_segment.get(segment_idx)
         viewport = segments.viewport_xy[segment_idx]
         chapters.append(
             {
-                "label": f"摘要片段 {order}",
+                "label": point.name if point is not None else f"导览点 {order}",
                 "segment": segment_idx,
-                "time": segment_time_label(segments, segment_idx),
+                "time": point.time_label if point is not None else segment_time_label(segments, segment_idx),
                 "start": float(segments.start_times[segment_idx]),
                 "end": float(max(segments.end_times[segment_idx], segments.start_times[segment_idx] + 0.5)),
                 "yaw": float((viewport[0] - 0.5) * 2 * np.pi),
@@ -1785,8 +1844,8 @@ map_reference_url = st.sidebar.text_input(
 )
 
 st.sidebar.header("摘要设置")
-method_name = "S3-360-Guide"
-st.sidebar.caption("摘要方法：S3-360-Guide")
+method_name = "S3-360-TourGuide"
+st.sidebar.caption("摘要方法：S3-360-TourGuide（导览点 + 智能路线）")
 segment_size = st.sidebar.slider("片段长度（帧）", 2, 48, 8, 2)
 budget_ratio = st.sidebar.slider("摘要比例", 0.03, 0.7, 0.2, 0.01)
 video_max_frames = st.sidebar.slider("最多采样帧数", 96, 1200, 360, 24)
@@ -1821,6 +1880,7 @@ event_volumes = build_event_subvolumes(segments)
 event_coverage = covered_segment_ratio(event_volumes, segments)
 tour_points = build_tour_points(segments, result)
 route_metrics = tour_route_metrics(segments, result)
+guide_points = identify_guide_points(segments, result)
 
 source_text = video.source or video.name
 note_text = f"。{video.note}" if video.note else ""
@@ -1832,8 +1892,9 @@ st.markdown(
     """
     <span class="flow-chip">Step 1: Saliency Maps</span>
     <span class="flow-chip">Step 2: 2D Event Video</span>
-    <span class="flow-chip">Step 3: S3-360-Guide Summary</span>
     <span class="flow-chip">Scenario: S3-360-TourGuide</span>
+    <span class="flow-chip">Step 3: S3-360-TourGuide Route</span>
+    <span class="flow-chip">Paper Alignment</span>
     <span class="flow-chip">Extension: YouTube-style 360 Player</span>
     <span class="flow-chip">Extension: Viewing Trace & Comfort</span>
     """,
@@ -1844,9 +1905,9 @@ st.caption(
     f"{format_seconds(sampled_duration(video))}；摘要时间均按原视频时间显示。"
 )
 st.info(
-    "当前默认使用远程最新版的 S3-360-Guide：在 S3-360 基础上加入事件覆盖增益和视角稳定性约束；"
-    "页面同时新增 S3-360-TourGuide 场景层，把摘要片段组织成导览点、导览地图和可下载报告；"
-    "并保留三阶段流程、原视频 360°播放器、观看轨迹记录、舒适度评估、2D event video 导出和最终短 2D 视频导出。"
+    "当前默认使用场景化的 S3-360-TourGuide：把摘要片段识别为导览点，并生成更适合连续观看的智能导览路线；"
+    "页面同时包含论文对齐诊断、导览地图、可下载报告、原视频 360°播放器、观看轨迹记录、舒适度评估、"
+    "2D event video 导出和最终短 2D 视频导出。"
     "如果长视频摘要覆盖太少，可以提高左侧“最多采样帧数”。"
 )
 
@@ -1985,8 +2046,8 @@ st.markdown(
 )
 if len(uploaded_content) > 120 * 1024 * 1024:
     st.warning("当前视频较大，全景播放器首次载入可能比较慢；若答辩现场卡顿，建议准备一份压缩到 1080p/1440p 的 MP4。")
-video_chapters = guided_video_chapters(segments, result)
-st.iframe(
+video_chapters = guided_video_chapters(segments, result, guide_points)
+components.html(
     immersive_video_player_html(
         uploaded_video.name,
         uploaded_video_data_url(uploaded_video.name, uploaded_content),
@@ -2000,7 +2061,7 @@ st.subheader("Extension. VR Guide Lab（导览展示页）")
 st.markdown(
     """
     <div class="step-band">
-      <strong>扩展实验：</strong>把摘要片段转成一条可展示的 360°导览路线，并在播放器中记录用户观看轨迹。
+      <strong>扩展实验：</strong>系统先识别关键导览点，再把导览点组织成一条可展示的 360°智能导览路线，并在播放器中记录用户观看轨迹。
       这部分用于说明系统不仅能选片段，还能评价“看哪里、怎么引导、看得是否平滑”。
     </div>
     """,
@@ -2016,11 +2077,25 @@ else:
 
 lab_cols = st.columns([1.35, 0.85])
 with lab_cols[0]:
-    st.image(
-        tour_route_map_image(video, tour_points),
-        caption="推荐导览路线：编号点表示导览点，箭头表示系统建议的观看方向切换顺序。",
-        width="stretch",
-    )
+    map_tab, pano_tab, erp_tab = st.tabs(["导览地图", "全景路线", "转向诊断"])
+    with map_tab:
+        st.image(
+            tour_map_image(guide_points),
+            caption="导览地图式展示：GP 表示导览点，箭头表示推荐游览顺序，适合答辩快速说明系统路线规划结果。",
+            width="stretch",
+        )
+    with pano_tab:
+        st.image(
+            guide_overview_image(video, segments, result, guide_points),
+            caption="全景路线：导览点投影到 ERP 全景图上，展示系统建议用户在 360°画面中看向哪里。",
+            width="stretch",
+        )
+    with erp_tab:
+        st.image(
+            tour_route_map_image(video, tour_points),
+            caption="ERP 转向诊断：绿色/黄色/红色表示相邻导览点之间的转向舒适状态。",
+            width="stretch",
+        )
 with lab_cols[1]:
     st.markdown(
         f"""
@@ -2053,19 +2128,75 @@ guide_cols[1].metric("最大跳变", f"{metric_row['guide_max_angle_deg']:.1f}°
 guide_cols[2].metric("转向速度", f"{metric_row['guide_avg_speed_deg_s']:.1f}°/s")
 guide_cols[3].metric("舒适度", f"{comfort_score:.3f}")
 
+st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+st.markdown('<div class="story-label">5.4 用户观看轨迹分析</div>', unsafe_allow_html=True)
+trace_cols = st.columns([0.9, 1.1])
+with trace_cols[0]:
+    trace_upload = st.file_uploader(
+        "上传播放器导出的 viewing_trace.csv",
+        type=["csv"],
+        key="viewing_trace_upload",
+    )
+    st.caption("先在播放器右上角点击“导出 viewing_trace.csv”，再把 CSV 上传到这里即可分析用户是否跟随推荐视角。")
+
+trace_summary = None
+trace_by_point = pd.DataFrame()
+if trace_upload is not None:
+    try:
+        trace_df = pd.read_csv(trace_upload)
+        trace_summary, trace_by_point = analyze_viewing_trace(trace_df, guide_points)
+    except Exception as exc:
+        st.warning(f"观看轨迹 CSV 解析失败：{exc}")
+
+with trace_cols[1]:
+    if trace_summary:
+        trace_metric_cols = st.columns(4)
+        trace_metric_cols[0].metric("轨迹样本", f"{int(trace_summary['samples'])}")
+        trace_metric_cols[1].metric("平均误差", f"{float(trace_summary['mean_error_deg']):.1f}°")
+        trace_metric_cols[2].metric("命中率", f"{float(trace_summary['hit_rate']):.3f}")
+        trace_metric_cols[3].metric("跟随率", f"{float(trace_summary['follow_rate']):.3f}")
+        st.markdown(
+            f"""
+            <div class="trace-callout">
+              偏离最明显导览点：<b>{trace_summary['worst_point']}</b>。
+              命中率按视角误差不超过 25° 统计。
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            """
+            <div class="trace-callout">
+              这里用于回放分析用户观看行为：上传 CSV 后会显示平均视角误差、推荐视角命中率、导览点跟随率和偏离最明显的导览点。
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+if not trace_by_point.empty:
+    st.dataframe(trace_by_point, width="stretch", hide_index=True)
+
 story_items = segment_previews(video, segments, result, max_items=4)
 if story_items:
-    st.markdown('<div class="story-label">摘要导览片段缩略图</div>', unsafe_allow_html=True)
+    st.markdown('<div class="story-label">导览点缩略图</div>', unsafe_allow_html=True)
     story_cols = st.columns(len(story_items))
+    point_by_segment = {point.segment: point for point in guide_points}
     for col, (selected_segment, image) in zip(story_cols, story_items, strict=True):
+        point = point_by_segment.get(selected_segment)
         with col:
             st.image(
                 image,
-                caption=f"S{selected_segment} · {segment_time_label(segments, selected_segment)}",
+                caption=(
+                    f"{point.name} · {point.time_label}"
+                    if point is not None
+                    else f"S{selected_segment} · {segment_time_label(segments, selected_segment)}"
+                ),
                 width="stretch",
             )
 
-with st.expander("技术细节：yaw / pitch 坐标路径与明细表"):
+with st.expander("导览点识别结果与路线技术细节"):
+    st.dataframe(guide_points_table(guide_points), width="stretch", hide_index=True)
     st.plotly_chart(guide_path_figure(segments, result), width="stretch")
     st.dataframe(tour_point_table(tour_points), width="stretch", hide_index=True)
     st.caption("原始 segment/yaw/pitch 数值表：")
@@ -2164,9 +2295,9 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-tour = vr_tour_frames(video, segments, result)
+tour = vr_tour_frames(video, segments, result, guide_points)
 if tour:
-    st.iframe(panorama_viewer_html(tour), height=580)
+    components.html(panorama_viewer_html(tour), height=580)
 else:
     st.info("当前数据没有 frames 字段，无法打开全景浏览模式。")
 

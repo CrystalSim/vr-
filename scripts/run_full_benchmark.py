@@ -206,7 +206,7 @@ def export_charts(summary: pd.DataFrame, out_dir: Path) -> None:
         plt.savefig(chart_dir / "method_f_score.png", dpi=180)
         plt.close()
 
-    main_methods = ["Uniform", "Saliency-only", "MMR", "S3-360", "S3-360-Guide"]
+    main_methods = ["Uniform", "Saliency-only", "MMR", "S3-360", "S3-360-Guide", "S3-360-TourGuide"]
     budget_view = summary[
         (summary["segment_size"] == default_segment) & summary["method"].isin(main_methods)
     ]
@@ -233,6 +233,7 @@ def write_report(config: BenchmarkConfig, per_video: pd.DataFrame, summary: pd.D
         & (summary["budget_ratio"] == default_budget)
     ].sort_values("f_score_mean", ascending=False)
     guide_gap = method_gap(default_summary, "S3-360-Guide", "S3-360")
+    tour_gap = method_gap(default_summary, "S3-360-TourGuide", "S3-360-Guide")
     mmr_gap = method_gap(default_summary, "S3-360-Guide", "MMR")
 
     lines = [
@@ -264,6 +265,7 @@ def write_report(config: BenchmarkConfig, per_video: pd.DataFrame, summary: pd.D
         "## Main Observations",
         "",
         f"- `S3-360-Guide` vs `S3-360` F-score gap: `{guide_gap:+.4f}`.",
+        f"- `S3-360-TourGuide` vs `S3-360-Guide` F-score gap: `{tour_gap:+.4f}`.",
         f"- `S3-360-Guide` vs `MMR` F-score gap: `{mmr_gap:+.4f}`.",
         "- `Random` and `Uniform` are included as sanity-check baselines.",
         "- `w/o ...` rows are ablations that show how each objective term affects the final score.",

@@ -79,7 +79,7 @@ def event_coverage(segments: SegmentTable, selected: np.ndarray) -> float:
 def avg_shot_jump(segments: SegmentTable, selected: np.ndarray) -> float:
     if len(selected) < 2:
         return 0.0
-    ordered = np.asarray(sorted(selected.tolist()))
+    ordered = np.asarray(selected.tolist(), dtype=np.int32)
     frame_jumps = np.diff(segments.starts[ordered])
     viewport_jumps = np.linalg.norm(np.diff(segments.viewport_xy[ordered], axis=0), axis=1)
     normalized_time = frame_jumps / max(segments.frame_count, 1)
@@ -149,7 +149,7 @@ def selection_table(segments: SegmentTable, result: SummaryResult) -> pd.DataFra
 
 def guide_path_table(segments: SegmentTable, result: SummaryResult) -> pd.DataFrame:
     rows = []
-    ordered = np.asarray(sorted(result.selected.tolist()))
+    ordered = np.asarray(result.selected.tolist(), dtype=np.int32)
     yaw_pitch = _viewport_to_yaw_pitch(segments.viewport_xy[ordered]) if len(ordered) else np.empty((0, 2))
     previous = None
     previous_time = None

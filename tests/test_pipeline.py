@@ -1,3 +1,5 @@
+import pandas as pd
+
 from s3_360.data import generate_demo_video
 from s3_360.data import save_npz
 from s3_360.evaluation import evaluate_all, guide_path_table
@@ -10,6 +12,7 @@ from s3_360.tourguide import (
     tour_report_markdown,
     tour_route_metrics,
 )
+from s3_360.tour import analyze_viewing_trace, guide_points_table, identify_guide_points
 from scripts.run_full_benchmark import BenchmarkConfig, run_benchmark
 
 
@@ -21,17 +24,38 @@ def test_demo_pipeline_runs() -> None:
 
     assert "S3-360" in results
     assert "S3-360-Guide" in results
+    assert "S3-360-TourGuide" in results
     assert len(results["S3-360"].selected) > 0
     assert len(results["S3-360-Guide"].selected) > 0
+    assert len(results["S3-360-TourGuide"].selected) > 0
     assert "event_gain" in results["S3-360-Guide"].components
     assert "view_stability" in results["S3-360-Guide"].components
-    assert len(metrics) == 6
+    assert "route_progress" in results["S3-360-TourGuide"].components
+    assert "turn_penalty" in results["S3-360-TourGuide"].components
+    assert len(metrics) == 7
     assert metrics["f_score"].between(0, 1).all()
     assert metrics["guide_comfort_score"].between(0, 1).all()
     assert metrics["guide_avg_angle_deg"].ge(0).all()
     assert len(guide_path_table(segments, results["S3-360-Guide"])) == len(
         results["S3-360-Guide"].selected
     )
+    guide_points = identify_guide_points(segments, results["S3-360-TourGuide"])
+    assert len(guide_points) == len(results["S3-360-TourGuide"].selected)
+    assert guide_points[0].point_type == "入口/开场"
+    assert not guide_points_table(guide_points).empty
+
+    trace = pd.DataFrame(
+        {
+            "video_sec": [0.1, 0.2, 0.3, 0.4],
+            "mode": ["guided", "guided", "free", "summary"],
+            "active_chapter": [0, 0, 1, 1],
+            "error_deg": [8.0, 18.0, 42.0, 12.0],
+        }
+    )
+    trace_summary, trace_points = analyze_viewing_trace(trace, guide_points)
+    assert trace_summary["samples"] == 4
+    assert 0 <= trace_summary["hit_rate"] <= 1
+    assert not trace_points.empty
 
 
 def test_tourguide_report_outputs_route_points() -> None:

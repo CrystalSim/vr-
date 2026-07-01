@@ -23,6 +23,7 @@ def summarize_all(segments: SegmentTable, budget_ratio: float = 0.18) -> dict[st
         "Saliency+Importance": saliency_importance(segments, budget_ratio),
         "S3-360": s3_360(segments, budget_ratio),
         "S3-360-Guide": s3_360_guide(segments, budget_ratio),
+        "S3-360-TourGuide": s3_360_tour_guide(segments, budget_ratio),
     }
 
 
@@ -350,6 +351,100 @@ def s3_360_guide_ablation(
     return SummaryResult(name, result.selected, result.score, result.components)
 
 
+def s3_360_tour_guide(
+    segments: SegmentTable,
+    budget_ratio: float,
+    alpha: float = 0.24,
+    beta: float = 0.22,
+    gamma: float = 0.14,
+    eta: float = 0.18,
+    theta: float = 0.16,
+    progress_weight: float = 0.12,
+    redundancy_weight: float = 0.20,
+    turn_weight: float = 0.18,
+    backtrack_weight: float = 0.16,
+) -> SummaryResult:
+    """Build an ordered tour route instead of a score-sorted summary set."""
+    budget = _budget(segments, budget_ratio)
+    saliency = _norm(segments.saliency_score)
+    importance = estimate_importance(segments.features)
+    features = _l2_normalize(segments.features)
+    view_stability = _view_stability(segments)
+    selected: list[int] = []
+    final_score = np.zeros(segments.num_segments, dtype=np.float32)
+    novelty_trace = np.zeros(segments.num_segments, dtype=np.float32)
+    event_gain_trace = np.zeros(segments.num_segments, dtype=np.float32)
+    turn_penalty_trace = np.zeros(segments.num_segments, dtype=np.float32)
+    progress_trace = np.zeros(segments.num_segments, dtype=np.float32)
+    backtrack_trace = np.zeros(segments.num_segments, dtype=np.float32)
+    redundancy_trace = np.zeros(segments.num_segments, dtype=np.float32)
+
+    content_score = _norm(0.52 * saliency + 0.48 * importance)
+    start_prior = _norm(1.0 - segments.start_times / max(float(segments.end_times[-1]), 1e-8))
+    first_score = _norm(0.78 * content_score + 0.22 * start_prior)
+    first = int(np.argmax(first_score))
+    selected.append(first)
+    final_score[first] = first_score[first]
+    progress_trace[first] = 1.0
+
+    for _ in range(max(budget - 1, 0)):
+        candidate_scores = np.full(segments.num_segments, -np.inf, dtype=np.float32)
+        for idx in range(segments.num_segments):
+            if idx in selected:
+                continue
+            novelty, redundancy = _novelty_redundancy(idx, selected, features)
+            event_gain = _event_coverage_gain(idx, selected, segments)
+            turn_penalty = _route_turn_penalty(idx, selected[-1], segments)
+            progress = _route_progress(idx, selected[-1], segments)
+            backtrack = 1.0 if idx <= selected[-1] else 0.0
+            score = (
+                alpha * saliency[idx]
+                + beta * importance[idx]
+                + gamma * novelty
+                + eta * event_gain
+                + theta * view_stability[idx]
+                + progress_weight * progress
+                - redundancy_weight * redundancy
+                - turn_weight * turn_penalty
+                - backtrack_weight * backtrack
+            )
+            candidate_scores[idx] = score
+        best = int(np.argmax(candidate_scores))
+        selected.append(best)
+        novelty_trace[best], redundancy_trace[best] = _novelty_redundancy(best, selected[:-1], features)
+        event_gain_trace[best] = _event_coverage_gain(best, selected[:-1], segments)
+        turn_penalty_trace[best] = _route_turn_penalty(best, selected[-2], segments)
+        progress_trace[best] = _route_progress(best, selected[-2], segments)
+        backtrack_trace[best] = 1.0 if best <= selected[-2] else 0.0
+        final_score[best] = candidate_scores[best]
+
+    selected_array = np.asarray(selected, dtype=np.int32)
+    explain_score = _norm(
+        alpha * saliency
+        + beta * importance
+        + eta * event_gain_trace
+        + theta * view_stability
+        + progress_weight * progress_trace
+        + final_score.clip(min=0)
+    )
+    return SummaryResult(
+        "S3-360-TourGuide",
+        selected_array,
+        explain_score,
+        {
+            "saliency": saliency,
+            "importance": importance,
+            "novelty": novelty_trace,
+            "event_gain": event_gain_trace,
+            "view_stability": view_stability,
+            "route_progress": progress_trace,
+            "turn_penalty": turn_penalty_trace,
+            "backtrack": backtrack_trace,
+            "redundancy": redundancy_trace,
+        },
+    )
+
+
 def estimate_importance(features: np.ndarray) -> np.ndarray:
     normalized = _l2_normalize(features)
     centrality = normalized @ normalized.mean(axis=0)
@@ -405,6 +500,20 @@ def _view_jump_penalty(idx: int, selected: list[int], segments: SegmentTable) ->
         return 0.0
     nearest = min(selected, key=lambda item: abs(item - idx))
     return float(np.linalg.norm(segments.viewport_xy[idx] - segments.viewport_xy[nearest]))
+
+
+def _route_turn_penalty(idx: int, previous: int, segments: SegmentTable) -> float:
+    return float(np.linalg.norm(segments.viewport_xy[idx] - segments.viewport_xy[previous]))
+
+
+def _route_progress(idx: int, previous: int, segments: SegmentTable) -> float:
+    if idx <= previous:
+        return 0.0
+    gap = (float(segments.start_times[idx]) - float(segments.start_times[previous])) / max(
+        float(segments.end_times[-1]),
+        1e-8,
+    )
+    return float(np.exp(-4.0 * abs(gap - 0.16)))
 
 
 def _budget(segments: SegmentTable, budget_ratio: float) -> int:

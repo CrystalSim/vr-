@@ -57,7 +57,7 @@ def metrics_figure(metrics: pd.DataFrame) -> go.Figure:
 
 
 def guide_path_figure(segments: SegmentTable, result: SummaryResult) -> go.Figure:
-    selected = np.asarray(sorted(result.selected.tolist()))
+    selected = np.asarray(result.selected.tolist(), dtype=np.int32)
     fig = go.Figure()
     if selected.size:
         viewport = segments.viewport_xy[selected]
