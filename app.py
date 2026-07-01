@@ -16,7 +16,7 @@ from s3_360.data import generate_demo_video, load_video, save_npz
 from s3_360.evaluation import evaluate_all, selection_table
 from s3_360.methods import summarize_all
 from s3_360.segmentation import make_segments
-from s3_360.video import write_storyboard_video
+from s3_360.video import write_event_video, write_storyboard_video, write_summary_video
 from s3_360.visualization import metrics_figure, overlay_heatmap, timeline_figure, viewport_box
 from scripts.make_real360_sample import from_video_file
 
@@ -59,6 +59,26 @@ st.markdown(
         font-size: 1.02rem;
         font-weight: 700;
         margin: 0.2rem 0 0.55rem 0;
+    }
+    .step-band {
+        border-left: 5px solid #2563eb;
+        background: #f8fafc;
+        padding: 0.75rem 0.95rem;
+        margin: 0.3rem 0 0.9rem 0;
+        border-radius: 8px;
+    }
+    .step-band strong {
+        color: #0f172a;
+    }
+    .flow-chip {
+        display: inline-block;
+        border: 1px solid #cbd5e1;
+        border-radius: 999px;
+        padding: 0.35rem 0.65rem;
+        margin: 0.15rem 0.2rem 0.15rem 0;
+        background: #ffffff;
+        color: #334155;
+        font-size: 0.88rem;
     }
     </style>
     """,
@@ -151,6 +171,31 @@ def segment_previews(video, segments, result, max_items: int = 6) -> list[tuple[
             )
         )
     return previews
+
+
+def event_segment_indices(segments, quantile: float = 0.62) -> np.ndarray:
+    if segments.label_score is not None:
+        selected = np.flatnonzero(segments.label_score >= 0.5)
+    else:
+        threshold = float(np.quantile(segments.saliency_score, quantile))
+        selected = np.flatnonzero(segments.saliency_score >= threshold)
+    if selected.size == 0:
+        selected = np.asarray([int(np.argmax(segments.saliency_score))], dtype=np.int32)
+    return selected.astype(np.int32)
+
+
+def method_slug(name: str) -> str:
+    return name.lower().replace("+", "_").replace("-", "_").replace(" ", "_")
+
+
+def download_video_button(path: Path, label: str) -> None:
+    st.download_button(
+        label,
+        data=path.read_bytes(),
+        file_name=path.name,
+        mime="video/mp4",
+        use_container_width=True,
+    )
 
 
 def image_data_url(image: Image.Image, max_width: int = 1024) -> str:
@@ -591,12 +636,21 @@ results = summarize_all(segments, budget_ratio=budget_ratio)
 metrics = evaluate_all(segments, results)
 result = results[method_name]
 
-st.title("S³-360 360°视频智能导览与时空摘要")
-st.caption("把难以完整观看的全景视频，转换成普通屏幕上更容易理解的导览摘要")
+st.title("360°视频三阶段智能摘要系统")
+st.caption("复现 CA-SUM-360 / S³-360 的核心流程，并扩展为可交互、可导出、可解释的课堂演示系统")
 source_text = video.source or video.name
 note_text = f"。{video.note}" if video.note else ""
 st.markdown(
     f'<div class="source-line">当前样本：<b>{source_text}</b>{note_text}</div>',
+    unsafe_allow_html=True,
+)
+st.markdown(
+    """
+    <span class="flow-chip">Step 1: Saliency Maps</span>
+    <span class="flow-chip">Step 2: 2D Event Video</span>
+    <span class="flow-chip">Step 3: CA-SUM / Temporal Summary</span>
+    <span class="flow-chip">Extension: Interactive VR Preview</span>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -611,19 +665,83 @@ metric_cols[4].metric("事件覆盖率", f"{metric_row['event_coverage']:.3f}")
 frame_idx = st.slider("展示帧", 0, video.num_frames - 1, int(video.num_frames * 0.45))
 segment_idx = min(frame_idx // segment_size, segments.num_segments - 1)
 frame = video.frames[frame_idx] if video.frames is not None else fallback_frame(video)
+event_segments = event_segment_indices(segments)
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("1. 问题对比")
-problem_col, solution_col = st.columns([1.18, 1])
-with problem_col:
-    st.markdown('<div class="story-label">原始 360°全景画面</div>', unsafe_allow_html=True)
+st.subheader("Step 1. Saliency Maps（中间输出 1）")
+st.markdown(
+    """
+    <div class="step-band">
+      <strong>输入：</strong>360°视频帧。<br>
+      <strong>输出：</strong>每一帧“哪里重要”的显著性热力图，为后续裁剪普通 2D 视角提供依据。
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+raw_col, heat_col, guide_col = st.columns(3)
+with raw_col:
+    st.markdown('<div class="panel-label">输入帧：ERP 全景图</div>', unsafe_allow_html=True)
     st.image(raw_frame(frame), use_container_width=True)
-with solution_col:
-    st.markdown('<div class="story-label">系统导出的普通屏幕视角</div>', unsafe_allow_html=True)
-    st.image(viewport_crop(frame, segments.viewport_xy[segment_idx]), use_container_width=True)
+with heat_col:
+    st.markdown('<div class="panel-label">中间输出：saliency heatmap</div>', unsafe_allow_html=True)
+    st.image(heatmap_image(video.saliency[frame_idx]), use_container_width=True)
+with guide_col:
+    st.markdown('<div class="panel-label">视角建议：重要区域框</div>', unsafe_allow_html=True)
+    st.image(
+        guided_frame(frame, video.saliency[frame_idx], segments.viewport_xy[segment_idx]),
+        use_container_width=True,
+    )
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("2. 360°/VR 浏览模式")
+st.subheader("Step 2. 2D Event Video（中间输出 2）")
+st.markdown(
+    """
+    <div class="step-band">
+      <strong>处理：</strong>根据显著性区域聚合事件，自动裁剪普通 16:9 视角。<br>
+      <strong>输出：</strong>一个不再是 360°的 2D event video，保留所有检测到的重要事件，但还没有做最终时间摘要。
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+event_cols = st.columns([1, 1.15])
+with event_cols[0]:
+    st.markdown('<div class="story-label">当前帧自动裁剪视角</div>', unsafe_allow_html=True)
+    st.image(viewport_crop(frame, segments.viewport_xy[segment_idx]), use_container_width=True)
+with event_cols[1]:
+    st.markdown('<div class="story-label">检测到的 event 片段</div>', unsafe_allow_html=True)
+    st.dataframe(
+        selection_table(
+            segments,
+            SimpleNamespace(method="2D Event Video", selected=event_segments, score=segments.saliency_score),
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+if video.frames is None:
+    st.info("当前数据没有 frames 字段，无法导出 2D event video。")
+else:
+    if st.button("生成 Step 2 的 2D Event Video（MP4）", use_container_width=True):
+        event_out = write_event_video(
+            video.frames,
+            segments,
+            event_segments,
+            Path("outputs") / "step2_2d_event_video.mp4",
+            fps=8.0,
+        )
+        st.video(str(event_out))
+        download_video_button(event_out, "下载 2D Event Video")
+
+st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+st.subheader("Extension. 360°/VR 交互预览")
+st.markdown(
+    """
+    <div class="step-band">
+      <strong>我们的增强：</strong>在最终摘要之外，保留一个可拖拽的全景浏览器，用来展示推荐视角是否合理。
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 tour = vr_tour_frames(video, segments, result)
 if tour:
     components.html(panorama_viewer_html(tour), height=580)
@@ -631,23 +749,16 @@ else:
     st.info("当前数据没有 frames 字段，无法打开全景浏览模式。")
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("3. 系统怎么判断")
-raw_col, heat_col, guide_col = st.columns(3)
-with raw_col:
-    st.markdown('<div class="panel-label">原始 ERP</div>', unsafe_allow_html=True)
-    st.image(raw_frame(frame), use_container_width=True)
-with heat_col:
-    st.markdown('<div class="panel-label">显著性热力图</div>', unsafe_allow_html=True)
-    st.image(heatmap_image(video.saliency[frame_idx]), use_container_width=True)
-with guide_col:
-    st.markdown('<div class="panel-label">选中视角框</div>', unsafe_allow_html=True)
-    st.image(
-        guided_frame(frame, video.saliency[frame_idx], segments.viewport_xy[segment_idx]),
-        use_container_width=True,
-    )
-
-st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("4. 摘要结果")
+st.subheader("Step 3. Final Output（最终短 2D 视频）")
+st.markdown(
+    """
+    <div class="step-band">
+      <strong>处理：</strong>对 2D event video 再做时间摘要，选择最关键、少重复、覆盖事件更多的片段。<br>
+      <strong>输出：</strong>最终可播放的短 2D summary video，可用于答辩直接展示。
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 previews = segment_previews(video, segments, result)
 if previews:
     preview_cols = st.columns(min(len(previews), 4))
@@ -663,26 +774,48 @@ if previews:
 else:
     st.info("当前数据没有 frames 字段，无法显示缩略图。")
 
+if video.frames is None:
+    st.info("当前数据没有 frames 字段，无法导出最终短视频。")
+else:
+    final_cols = st.columns(2)
+    with final_cols[0]:
+        if st.button("生成最终短 2D Summary Video（MP4）", use_container_width=True):
+            summary_out = write_summary_video(
+                video.frames,
+                segments,
+                result,
+                Path("outputs") / f"step3_{method_slug(method_name)}_summary.mp4",
+                fps=8.0,
+            )
+            st.video(str(summary_out))
+            download_video_button(summary_out, "下载最终短视频")
+    with final_cols[1]:
+        if st.button("生成带热力图的 Storyboard GIF", use_container_width=True):
+            gif_out = write_storyboard_video(
+                video.frames,
+                video.saliency,
+                segments,
+                result,
+                Path("outputs") / f"{method_slug(method_name)}_storyboard.gif",
+            )
+            st.image(str(gif_out), use_container_width=True)
+
 st.plotly_chart(timeline_figure(segments, result), use_container_width=True)
 
 with st.expander("查看选中片段明细"):
     st.dataframe(selection_table(segments, result), use_container_width=True, hide_index=True)
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("5. 方法对比")
+st.subheader("方法对比与工作量说明")
 st.plotly_chart(metrics_figure(metrics), use_container_width=True)
 st.dataframe(metrics, use_container_width=True, hide_index=True)
 
-st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("摘要动图")
-if video.frames is None:
-    st.info("当前数据没有 frames 字段，无法导出可视化动图。")
-elif st.button("生成当前方法摘要 GIF"):
-    out = write_storyboard_video(
-        video.frames,
-        video.saliency,
-        segments,
-        result,
-        Path("outputs") / f"{method_name.lower().replace(' ', '_')}_summary.gif",
+with st.expander("四人分工如何体现"):
+    st.markdown(
+        """
+        - 成员 A：复现并整理 CA-SUM-360 / S³-360 的三阶段系统流程，完成片段划分、显著性和重要性打分。
+        - 成员 B：完成 360°视频到普通 2D event video 的自动视角裁剪和 MP4 导出。
+        - 成员 C：完成最终时间摘要、方法对比指标、短视频/GIF 导出和实验结果表。
+        - 成员 D：完成 Streamlit 可视化、交互式 360°/VR 预览、README 和答辩包装材料。
+        """
     )
-    st.image(str(out), use_container_width=True)

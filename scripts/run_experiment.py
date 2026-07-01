@@ -3,11 +3,24 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
+
 from s3_360.data import load_video
 from s3_360.evaluation import evaluate_all, selection_table
 from s3_360.methods import summarize_all
 from s3_360.segmentation import make_segments
-from s3_360.video import write_storyboard_video
+from s3_360.video import write_event_video, write_storyboard_video, write_summary_video
+
+
+def event_segment_indices(segments, quantile: float = 0.62) -> np.ndarray:
+    if segments.label_score is not None:
+        selected = np.flatnonzero(segments.label_score >= 0.5)
+    else:
+        threshold = float(np.quantile(segments.saliency_score, quantile))
+        selected = np.flatnonzero(segments.saliency_score >= threshold)
+    if selected.size == 0:
+        selected = np.asarray([int(np.argmax(segments.saliency_score))], dtype=np.int32)
+    return selected.astype(np.int32)
 
 
 def main() -> None:
@@ -17,6 +30,8 @@ def main() -> None:
     parser.add_argument("--segment-size", type=int, default=8)
     parser.add_argument("--budget-ratio", type=float, default=0.18)
     parser.add_argument("--video", action="store_true", help="Export S3-360 storyboard GIF when frames exist.")
+    parser.add_argument("--event-video", action="store_true", help="Export Step 2 cropped 2D event video.")
+    parser.add_argument("--summary-video", action="store_true", help="Export Step 3 final short 2D summary video.")
     args = parser.parse_args()
 
     video = load_video(args.input)
@@ -38,6 +53,20 @@ def main() -> None:
             segments,
             results["S3-360"],
             out_dir / "s3_360_summary.gif",
+        )
+    if args.event_video and video.frames is not None:
+        write_event_video(
+            video.frames,
+            segments,
+            event_segment_indices(segments),
+            out_dir / "step2_2d_event_video.mp4",
+        )
+    if args.summary_video and video.frames is not None:
+        write_summary_video(
+            video.frames,
+            segments,
+            results["S3-360"],
+            out_dir / "step3_final_summary.mp4",
         )
 
     print(metrics.to_string(index=False))
