@@ -1,4 +1,4 @@
-# S³-360：360°视频智能导览与时空摘要系统
+# S³-360 VR：360°视频智能导览与时空摘要系统
 
 本项目将论文 **An Integrated System for Spatio-Temporal Summarization of 360-degrees Videos** 和开源项目 **CA-SUM-360** 的三阶段思想包装成一个可运行、可演示、可导出结果的系统。项目不只停留在复现算法，而是补充了交互式 VR 预览、2D event video 生成、最终短视频导出和完整可视化说明。
 
@@ -17,14 +17,14 @@
 - 轻量相机运动判别：分析 ERP 顶部/底部区域的帧间变化，判断静态相机或运动相机，并解释对应 saliency 路径
 - Event sub-volume 诊断：将高显著片段按时间邻近和推荐视角邻近聚合成事件子体，贴合原论文的 2D Video Production 思路
 - S³-360-TourGuide 场景化方法：将摘要片段识别为导览点，并按景点覆盖、路线推进和转向舒适度生成智能导览路线
-- Precision / Recall / F-score / 重复率 / 事件覆盖率 / 镜头跳变等指标
-- Streamlit 网页展示：ERP 视图、显著性热力图、虚拟视角框、时间轴和方法对比
-- YouTube-style 360°原视频播放器：直接播放上传的 360°视频，支持拖拽视角、滚轮缩放、摘要章节巡航、推荐视角自动贴合和全屏
-- 浏览器内 VR 导览实验：记录用户观看轨迹，导出 `viewing_trace.csv`，实时显示推荐视角误差和舒适度估计
+- 严格实验脚本：在有人工标注时支持论文实验指标；网页 Demo 默认不展示无 ground truth 支撑的评分或方法排名
+- Streamlit VR 网页展示：ERP 视图、显著性热力图、虚拟视角框、导览地图和摘要视频导出
+- YouTube-style 360°/VR 原视频播放器：直接播放上传的 360°视频，支持拖拽视角、滚轮缩放、摘要章节巡航、推荐视角自动贴合和全屏
+- 浏览器内 VR 导览实验：记录用户观看轨迹，导出 `viewing_trace.csv`，实时显示推荐视角误差和路线状态
 - 导览地图式展示：将导览点组织成 GP 节点路线图，并保留 ERP 全景路线投影用于解释“看哪里”
-- 用户观看轨迹分析：上传 `viewing_trace.csv` 后统计平均视角误差、推荐命中率、导览点跟随率和偏离最明显导览点
-- VR 舒适度评价面板：统计推荐导览路径的平均转向角、最大转向角、平均转向速度和舒适度分数
-- S³-360-TourGuide 场景层：将摘要片段组织成“导览点”，生成导览路线地图、综合导览分和可下载 `tourguide` 报告
+- 用户观看轨迹分析：上传 `viewing_trace.csv` 后统计平均视角误差、看向推荐区域的样本数、处于导览段的样本数和偏离最明显导览点
+- VR 路线平滑性展示：统计推荐导览路径的平均转向角、最大转向角、平均转向速度和路线状态
+- S³-360-TourGuide 场景层：将摘要片段组织成“导览点”，生成导览路线地图、导览点表和可下载 `tourguide` 报告
 - 摘要关键帧 360°/VR 巡航：把摘要片段渲染成可拖拽的全景视角，用于快速验证推荐视角是否合理
 - Step 2 2D event video 导出、Step 3 最终短 2D summary video 导出、GIF 摘要动图导出
 
@@ -34,7 +34,7 @@
 
 ## 论文要求对齐
 
-目前对齐的公开论文/数据集是 360-VSumm：论文和官方仓库说明其完整数据包含 40 个由 360°视频生成的 2D 摘要视频，仓库中的 HDF5 数据提供 `features`、`gtscore`、`user_summary`、`change_points`、`saliency_scores` 等字段；其中 `features` 是 1024 维 GoogleNet pool5 深度特征，`user_summary` 包含 15 位用户摘要标注。论文实验使用 F-score，并在多个用户摘要中取最大匹配值，同时报告 5-fold cross-validation。
+目前对齐的公开论文/数据集是 360-VSumm：论文和官方仓库说明其完整数据包含 40 个由 360°视频生成的 2D 摘要视频，仓库中的 HDF5 数据提供 `features`、`gtscore`、`user_summary`、`change_points`、`saliency_scores` 等字段；其中 `features` 是 1024 维 GoogleNet pool5 深度特征，`user_summary` 包含 15 位用户摘要标注。严格实验流程只在存在人工标注时运行摘要评价，并按 5-fold cross-validation 输出结果。
 
 本项目现在按这个要求分成两套流程：
 
@@ -173,9 +173,9 @@ streamlit run app.py
 网页中按论文流程组织：
 
 - YouTube-style 360°原视频播放器：直接播放上传原视频，并把导览点显示成可点击章节。
-- Scenario S3-360-TourGuide：把摘要片段命名为导览点，展示 ERP 路线地图、路线评分、外部地图参考和导览报告下载。
+- Scenario S3-360-TourGuide：把摘要片段命名为导览点，展示 ERP 路线地图、导览点说明、外部地图参考和导览报告下载。
 - Paper Alignment 相机运动与事件子体诊断：展示静态/运动相机判别、推荐 saliency 路径和 event sub-volume 明细。
-- Extension Viewing Trace & Comfort：在浏览器里记录观看方向，导出轨迹 CSV，并评价推荐导览路径的舒适度。
+- Extension Viewing Trace & Comfort：在浏览器里记录观看方向，导出轨迹 CSV，并展示推荐导览路径的转向情况。
 - Step 1 Saliency Maps：展示原始全景帧、热力图和重要视角框。
 - Step 2 2D Event Video：展示事件片段表，并可导出普通 2D MP4。
 - Extension 摘要关键帧 360°/VR 巡航：展示摘要片段的可拖拽全景浏览模式。

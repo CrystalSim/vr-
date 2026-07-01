@@ -85,7 +85,6 @@ def tour_point_table(points: list[TourGuidePoint]) -> pd.DataFrame:
                 "转向速度": f"{point.speed_deg_s:.1f}°/s",
                 "状态": point.comfort_state,
                 "事件": point.event_id if point.event_id > 0 else "-",
-                "分数": round(point.score, 3),
             }
             for point in points
         ]
@@ -135,6 +134,13 @@ def tour_report_markdown(
     route_metrics: dict[str, float],
     map_reference_url: str = "",
 ) -> str:
+    max_turn = float(route_metrics["guide_max_angle_deg"])
+    if max_turn <= 35:
+        route_state = "平滑"
+    elif max_turn <= 70:
+        route_state = "需要轻微转向"
+    else:
+        route_state = "转向较大"
     lines = [
         "# S3-360-TourGuide 导览报告",
         "",
@@ -147,21 +153,17 @@ def tour_report_markdown(
         f"- 导览点数量：{len(points)}",
         f"- 地图参考：{map_reference_url or '未填写，可使用 ERP 路线图作为空间参考'}",
         "",
-        "## 路线评分",
+        "## 路线概览",
         "",
-        f"- 综合导览分：{route_metrics['tour_route_score']:.1f}/100",
-        f"- 导览点/事件覆盖：{route_metrics['tour_coverage_score']:.3f}",
-        f"- 视角平滑度：{route_metrics['tour_smoothness_score']:.3f}",
-        f"- 内容多样性：{route_metrics['tour_diversity_score']:.3f}",
-        f"- 摘要效率：{route_metrics['tour_efficiency_score']:.3f}",
         f"- 平均转向角：{route_metrics['guide_avg_angle_deg']:.1f}°",
         f"- 最大转向角：{route_metrics['guide_max_angle_deg']:.1f}°",
         f"- 平均转向速度：{route_metrics['guide_avg_speed_deg_s']:.1f}°/s",
+        f"- 路线状态：{route_state}",
         "",
         "## 导览点明细",
         "",
-        "| 导览点 | 角色 | 时间段 | 推荐 yaw | 推荐 pitch | 转向角 | 状态 | 分数 |",
-        "| --- | --- | --- | ---: | ---: | ---: | --- | ---: |",
+        "| 导览点 | 角色 | 时间段 | 推荐 yaw | 推荐 pitch | 转向角 | 状态 |",
+        "| --- | --- | --- | ---: | ---: | ---: | --- |",
     ]
     for point in points:
         lines.append(
@@ -169,7 +171,7 @@ def tour_report_markdown(
             f"{point.label} | {point.role} | "
             f"{_format_seconds(point.start_sec)}-{_format_seconds(point.end_sec)} | "
             f"{point.yaw_deg:.1f}° | {point.pitch_deg:.1f}° | "
-            f"{point.jump_deg:.1f}° | {point.comfort_state} | {point.score:.3f} |"
+            f"{point.jump_deg:.1f}° | {point.comfort_state} |"
         )
     lines.extend(
         [
@@ -178,7 +180,7 @@ def tour_report_markdown(
             "",
             "本报告把原本的摘要片段进一步组织成导览点和导览路线。"
             "系统不仅选择值得看的时间段，还给出每个时间段的推荐观看方向，"
-            "并用转向角、转向速度、事件覆盖和多样性评价这条路线是否适合连续观看。",
+            "并用转向角和转向速度说明这条路线是否适合连续观看。",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -194,13 +196,19 @@ def tour_report_json(
     route_metrics: dict[str, float],
     map_reference_url: str = "",
 ) -> str:
+    route_overview = {
+        "tour_summary_ratio": route_metrics.get("tour_summary_ratio", 0.0),
+        "guide_avg_angle_deg": route_metrics.get("guide_avg_angle_deg", 0.0),
+        "guide_max_angle_deg": route_metrics.get("guide_max_angle_deg", 0.0),
+        "guide_avg_speed_deg_s": route_metrics.get("guide_avg_speed_deg_s", 0.0),
+    }
     payload = {
         "video_name": video_name,
         "source": source,
         "method": method_name,
         "sampled_duration_sec": sampled_duration_sec,
         "map_reference_url": map_reference_url,
-        "route_metrics": route_metrics,
+        "route_overview": route_overview,
         "tour_points": [asdict(point) for point in points],
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)

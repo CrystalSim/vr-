@@ -19,7 +19,7 @@ import streamlit.components.v1 as components
 from PIL import Image, ImageDraw
 
 from s3_360.camera_motion import analyze_camera_motion
-from s3_360.evaluation import evaluate_all, guide_path_table, selection_table
+from s3_360.evaluation import guide_path_table, selection_table
 from s3_360.events import build_event_subvolumes, covered_segment_ratio
 from s3_360.methods import summarize_all
 from s3_360.segmentation import make_segments
@@ -34,15 +34,13 @@ from s3_360.tour import analyze_viewing_trace, guide_points_table, identify_guid
 from s3_360.video import write_event_video, write_storyboard_video, write_summary_video
 from s3_360.visualization import (
     guide_path_figure,
-    metrics_figure,
     overlay_heatmap,
-    timeline_figure,
     viewport_box,
 )
 from scripts.make_real360_sample import from_video_file
 
 
-st.set_page_config(page_title="S3-360", layout="wide")
+st.set_page_config(page_title="S3-360 VR Guide", layout="wide")
 
 st.markdown(
     """
@@ -1277,7 +1275,7 @@ def immersive_video_player_html(video_name: str, video_src: str, chapters: list[
         <div class="telemetry-cell"><span>轨迹样本</span><strong id="traceCount">0</strong></div>
         <div class="telemetry-cell"><span>视角误差</span><strong id="errorDeg">0°</strong></div>
         <div class="telemetry-cell"><span>当前模式</span><strong id="modeName">Free</strong></div>
-        <div class="telemetry-cell"><span>舒适度</span><strong id="comfortScore">1.00</strong></div>
+        <div class="telemetry-cell"><span>路线状态</span><strong id="comfortScore">平滑</strong></div>
       </div>
       <canvas class="trace-map" id="traceMap"></canvas>
       <button class="trace-download-large" id="traceDownloadLarge">导出 viewing_trace.csv</button>
@@ -1435,7 +1433,7 @@ function buildChapters() {
   }
   chapters.forEach((chapter, idx) => {
     const button = document.createElement('button');
-    button.innerHTML = '<strong>' + chapter.label + '</strong>' + chapter.time + ' · score ' + chapter.score.toFixed(2);
+    button.innerHTML = '<strong>' + chapter.label + '</strong>' + chapter.time;
     button.onclick = () => seekChapter(idx, true);
     chapterStrip.appendChild(button);
   });
@@ -1688,8 +1686,13 @@ function updateTelemetry(now) {
   errorDegEl.textContent = currentError.toFixed(0) + '°';
   modeNameEl.textContent = summaryMode ? 'Summary' : (autoGuide ? 'Guided' : 'Free');
   const avgSpeed = speedHistory.length ? speedHistory.reduce((a, b) => a + b, 0) / speedHistory.length : 0;
-  const comfort = Math.exp(-currentError / 95) * Math.exp(-avgSpeed / 180);
-  comfortScoreEl.textContent = comfort.toFixed(2);
+  let routeState = '平滑';
+  if (currentError > 45 || avgSpeed > 140) {
+    routeState = '转向较大';
+  } else if (currentError > 22 || avgSpeed > 80) {
+    routeState = '轻微转向';
+  }
+  comfortScoreEl.textContent = routeState;
   updateGuideArrow(chapter, currentError);
   drawTraceMap(chapter);
   lastTelemetryAt = now;
@@ -1854,8 +1857,8 @@ st.sidebar.caption(
     "优先在整段视频上均匀采样；若读取不到总帧数，会先按兜底步长扫完整段，再均匀压到最多采样帧数。"
 )
 
-st.title("S³-360 360°视频摘要与智能导览")
-st.caption("上传一段 360°视频，系统会自动提取关键片段，生成摘要视频，并提供可拖拽的 360°导览视角。")
+st.title("S³-360 VR 360°视频摘要与智能导览")
+st.caption("上传一段 360°视频，系统会提取关键导览点，生成可拖拽观看的 VR 导览路线。")
 
 if uploaded_video is None:
     st.info("请在左侧上传 MP4 / MOV / M4V 格式的 360°视频。上传后页面会展示原始视频、摘要视频和 360°/VR 导览。")
@@ -1874,7 +1877,6 @@ with st.spinner("正在抽取真实 360°视频帧并生成轻量特征..."):
 segments = make_segments(video, segment_size=segment_size)
 results = summarize_all(segments, budget_ratio=budget_ratio)
 result = results[method_name]
-metrics = evaluate_all(segments, results)
 camera_motion = analyze_camera_motion(video.frames)
 event_volumes = build_event_subvolumes(segments)
 event_coverage = covered_segment_ratio(event_volumes, segments)
@@ -1906,18 +1908,19 @@ st.caption(
 )
 st.info(
     "当前默认使用场景化的 S3-360-TourGuide：把摘要片段识别为导览点，并生成更适合连续观看的智能导览路线；"
-    "页面同时包含论文对齐诊断、导览地图、可下载报告、原视频 360°播放器、观看轨迹记录、舒适度评估、"
+    "页面聚焦 VR 导览演示，不展示需要 ground truth 支撑的实验指标或方法排名；"
+    "同时包含论文对齐诊断、导览地图、可下载报告、原视频 360°播放器、观看轨迹记录、"
     "2D event video 导出和最终短 2D 视频导出。"
     "如果长视频摘要覆盖太少，可以提高左侧“最多采样帧数”。"
 )
 
-metric_row = metrics.set_index("method").loc[method_name]
-metric_cols = st.columns(5)
-metric_cols[0].metric("F-score", f"{metric_row['f_score']:.3f}")
-metric_cols[1].metric("Precision", f"{metric_row['precision']:.3f}")
-metric_cols[2].metric("Recall", f"{metric_row['recall']:.3f}")
-metric_cols[3].metric("重复率", f"{metric_row['repeat_rate']:.3f}")
-metric_cols[4].metric("事件覆盖率", f"{metric_row['event_coverage']:.3f}")
+route_duration = sum(max(point.end_sec - point.start_sec, 0.0) for point in tour_points)
+overview_metric_cols = st.columns(5)
+overview_metric_cols[0].metric("视频覆盖时长", format_seconds(sampled_duration(video)))
+overview_metric_cols[1].metric("导览点", str(len(tour_points)))
+overview_metric_cols[2].metric("导览路线时长", format_seconds(route_duration))
+overview_metric_cols[3].metric("平均转向角", f"{route_metrics['guide_avg_angle_deg']:.1f}°")
+overview_metric_cols[4].metric("最大转向角", f"{route_metrics['guide_max_angle_deg']:.1f}°")
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
 st.subheader("Scenario. S3-360-TourGuide 场景化导览路线")
@@ -1933,12 +1936,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-tour_metric_cols = st.columns(5)
-tour_metric_cols[0].metric("综合导览分", f"{route_metrics['tour_route_score']:.1f}/100")
-tour_metric_cols[1].metric("导览点", str(len(tour_points)))
-tour_metric_cols[2].metric("覆盖得分", f"{route_metrics['tour_coverage_score']:.3f}")
-tour_metric_cols[3].metric("平滑得分", f"{route_metrics['tour_smoothness_score']:.3f}")
-tour_metric_cols[4].metric("多样性", f"{route_metrics['tour_diversity_score']:.3f}")
+tour_metric_cols = st.columns(4)
+tour_metric_cols[0].metric("导览点数量", str(len(tour_points)))
+tour_metric_cols[1].metric("路线时长", format_seconds(route_duration))
+tour_metric_cols[2].metric("平均转向", f"{route_metrics['guide_avg_angle_deg']:.1f}°")
+tour_metric_cols[3].metric("最大转向", f"{route_metrics['guide_max_angle_deg']:.1f}°")
 
 tour_cols = st.columns([1.25, 0.75])
 with tour_cols[0]:
@@ -1985,14 +1987,14 @@ report_json = tour_report_json(
 )
 download_cols = st.columns(2)
 download_cols[0].download_button(
-    "下载 TourGuide 报告（Markdown）",
+    "下载导览说明（Markdown）",
     data=report_md,
     file_name="s3_360_tourguide_report.md",
     mime="text/markdown",
     width="stretch",
 )
 download_cols[1].download_button(
-    "下载 TourGuide 数据（JSON）",
+    "下载导览点数据（JSON）",
     data=report_json,
     file_name="s3_360_tourguide_data.json",
     mime="application/json",
@@ -2016,9 +2018,9 @@ diagnostic_cols = st.columns(4)
 diagnostic_cols[0].metric(
     "相机类型",
     camera_type_label(camera_motion.camera_type),
-    f"{camera_motion.confidence:.0%} confidence",
+    f"置信度 {camera_motion.confidence:.0%}",
 )
-diagnostic_cols[1].metric("Pole motion", f"{camera_motion.motion_score:.3f}")
+diagnostic_cols[1].metric("相机运动量", f"{camera_motion.motion_score:.3f}")
 diagnostic_cols[2].metric("事件子体", str(len(event_volumes)))
 diagnostic_cols[3].metric("事件覆盖", f"{event_coverage:.0%}")
 st.caption(
@@ -2067,13 +2069,14 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-comfort_score = float(metric_row["guide_comfort_score"])
-if comfort_score >= 0.72:
+avg_turn = float(route_metrics["guide_avg_angle_deg"])
+max_turn = float(route_metrics["guide_max_angle_deg"])
+if max_turn <= 35:
     comfort_label, comfort_class = "平滑", ""
-elif comfort_score >= 0.45:
-    comfort_label, comfort_class = "中等", "warn"
+elif max_turn <= 70:
+    comfort_label, comfort_class = "需要轻微转向", "warn"
 else:
-    comfort_label, comfort_class = "跳变偏大", "risk"
+    comfort_label, comfort_class = "转向较大", "risk"
 
 lab_cols = st.columns([1.35, 0.85])
 with lab_cols[0]:
@@ -2100,7 +2103,7 @@ with lab_cols[1]:
     st.markdown(
         f"""
         <div class="demo-panel">
-          <span class="status-pill {comfort_class}">导览舒适度：{comfort_label}</span>
+          <span class="status-pill {comfort_class}">转向状态：{comfort_label}</span>
           <div style="height:0.75rem"></div>
           <strong>展示重点</strong>
           <div style="margin-top:0.45rem;color:#334155;line-height:1.55">
@@ -2123,10 +2126,10 @@ with lab_cols[1]:
     )
 
 guide_cols = st.columns(4)
-guide_cols[0].metric("转向角均值", f"{metric_row['guide_avg_angle_deg']:.1f}°")
-guide_cols[1].metric("最大跳变", f"{metric_row['guide_max_angle_deg']:.1f}°")
-guide_cols[2].metric("转向速度", f"{metric_row['guide_avg_speed_deg_s']:.1f}°/s")
-guide_cols[3].metric("舒适度", f"{comfort_score:.3f}")
+guide_cols[0].metric("导览点", str(len(guide_points)))
+guide_cols[1].metric("平均转向", f"{avg_turn:.1f}°")
+guide_cols[2].metric("最大转向", f"{max_turn:.1f}°")
+guide_cols[3].metric("路线状态", comfort_label)
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
 st.markdown('<div class="story-label">5.4 用户观看轨迹分析</div>', unsafe_allow_html=True)
@@ -2150,16 +2153,18 @@ if trace_upload is not None:
 
 with trace_cols[1]:
     if trace_summary:
+        hit_samples = round(float(trace_summary["hit_rate"]) * int(trace_summary["samples"]))
+        followed_samples = round(float(trace_summary["follow_rate"]) * int(trace_summary["samples"]))
         trace_metric_cols = st.columns(4)
         trace_metric_cols[0].metric("轨迹样本", f"{int(trace_summary['samples'])}")
         trace_metric_cols[1].metric("平均误差", f"{float(trace_summary['mean_error_deg']):.1f}°")
-        trace_metric_cols[2].metric("命中率", f"{float(trace_summary['hit_rate']):.3f}")
-        trace_metric_cols[3].metric("跟随率", f"{float(trace_summary['follow_rate']):.3f}")
+        trace_metric_cols[2].metric("看向推荐区", f"{hit_samples} 帧")
+        trace_metric_cols[3].metric("处于导览段", f"{followed_samples} 帧")
         st.markdown(
             f"""
             <div class="trace-callout">
               偏离最明显导览点：<b>{trace_summary['worst_point']}</b>。
-              命中率按视角误差不超过 25° 统计。
+              “看向推荐区”按视角误差不超过 25° 统计。
             </div>
             """,
             unsafe_allow_html=True,
@@ -2168,7 +2173,7 @@ with trace_cols[1]:
         st.markdown(
             """
             <div class="trace-callout">
-              这里用于回放分析用户观看行为：上传 CSV 后会显示平均视角误差、推荐视角命中率、导览点跟随率和偏离最明显的导览点。
+              这里用于回放分析用户观看行为：上传 CSV 后会显示平均视角误差、看向推荐区域的样本数、处于导览段的样本数和偏离最明显的导览点。
             </div>
             """,
             unsafe_allow_html=True,
@@ -2264,11 +2269,12 @@ with event_cols[0]:
     st.image(viewport_crop(frame, segments.viewport_xy[segment_idx]), width="stretch")
 with event_cols[1]:
     st.markdown('<div class="story-label">检测到的 event 片段</div>', unsafe_allow_html=True)
+    event_table = selection_table(
+        segments,
+        SimpleNamespace(method="2D Event Video", selected=event_segments, score=segments.saliency_score),
+    ).drop(columns=["score"], errors="ignore")
     st.dataframe(
-        selection_table(
-            segments,
-            SimpleNamespace(method="2D Event Video", selected=event_segments, score=segments.saliency_score),
-        ),
+        event_table,
         width="stretch",
         hide_index=True,
     )
@@ -2348,15 +2354,8 @@ with final_cols[0]:
 with final_cols[1]:
     download_video_button(summary_gif, "下载 Storyboard GIF")
 
-st.plotly_chart(timeline_figure(segments, result), width="stretch")
-
-with st.expander("查看选中片段明细"):
-    st.dataframe(selection_table(segments, result), width="stretch", hide_index=True)
-
-st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("方法对比与系统说明")
-st.plotly_chart(metrics_figure(metrics), width="stretch")
-st.dataframe(metrics, width="stretch", hide_index=True)
+with st.expander("查看最终导览片段明细"):
+    st.dataframe(tour_point_table(tour_points), width="stretch", hide_index=True)
 
 with st.expander("系统解释"):
     st.write(summary_explanation(segments, result, method_name))
