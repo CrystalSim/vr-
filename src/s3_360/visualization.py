@@ -56,6 +56,49 @@ def metrics_figure(metrics: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def guide_path_figure(segments: SegmentTable, result: SummaryResult) -> go.Figure:
+    selected = np.asarray(sorted(result.selected.tolist()))
+    fig = go.Figure()
+    if selected.size:
+        viewport = segments.viewport_xy[selected]
+        fig.add_trace(
+            go.Scatter(
+                x=(viewport[:, 0] - 0.5) * 360,
+                y=(0.5 - viewport[:, 1]) * 180,
+                mode="lines+markers+text",
+                text=[str(idx + 1) for idx in range(len(selected))],
+                textposition="top center",
+                marker={
+                    "size": 10,
+                    "color": segments.start_times[selected],
+                    "colorscale": "Viridis",
+                    "showscale": True,
+                    "colorbar": {"title": "sec"},
+                },
+                line={"color": "#2563eb", "width": 2},
+                name="recommended path",
+            )
+        )
+    fig.update_layout(
+        height=300,
+        margin={"l": 42, "r": 24, "t": 28, "b": 42},
+        xaxis={
+            "title": "yaw (deg)",
+            "range": [-180, 180],
+            "zeroline": True,
+            "gridcolor": "#e5e7eb",
+        },
+        yaxis={
+            "title": "pitch (deg)",
+            "range": [-90, 90],
+            "zeroline": True,
+            "gridcolor": "#e5e7eb",
+        },
+        showlegend=False,
+    )
+    return fig
+
+
 def overlay_heatmap(frame: np.ndarray, saliency: np.ndarray, alpha: float = 0.45) -> np.ndarray:
     frame_f = frame.astype(np.float32)
     heat = np.zeros_like(frame_f)

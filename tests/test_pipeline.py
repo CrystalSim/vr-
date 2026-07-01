@@ -1,6 +1,6 @@
 from s3_360.data import generate_demo_video
 from s3_360.data import save_npz
-from s3_360.evaluation import evaluate_all
+from s3_360.evaluation import evaluate_all, guide_path_table
 from s3_360.methods import summarize_all
 from s3_360.segmentation import make_segments
 from scripts.run_full_benchmark import BenchmarkConfig, run_benchmark
@@ -20,6 +20,11 @@ def test_demo_pipeline_runs() -> None:
     assert "view_stability" in results["S3-360-Guide"].components
     assert len(metrics) == 6
     assert metrics["f_score"].between(0, 1).all()
+    assert metrics["guide_comfort_score"].between(0, 1).all()
+    assert metrics["guide_avg_angle_deg"].ge(0).all()
+    assert len(guide_path_table(segments, results["S3-360-Guide"])) == len(
+        results["S3-360-Guide"].selected
+    )
 
 
 def test_strict_evaluation_uses_real_user_summaries() -> None:

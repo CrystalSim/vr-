@@ -10,7 +10,7 @@ dependencies:
   - h5py
   - matplotlib
   - plotly
-  - streamlit
+  - streamlit>=1.51
   - pillow
   - pytest
   - pip

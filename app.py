@@ -14,13 +14,20 @@ sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image, ImageDraw
 
-from s3_360.evaluation import evaluate_all, selection_table
+from s3_360.evaluation import evaluate_all, guide_path_table, selection_table
 from s3_360.methods import summarize_all
 from s3_360.segmentation import make_segments
 from s3_360.video import write_event_video, write_storyboard_video, write_summary_video
-from s3_360.visualization import metrics_figure, overlay_heatmap, timeline_figure, viewport_box
+from s3_360.visualization import (
+    guide_path_figure,
+    metrics_figure,
+    overlay_heatmap,
+    timeline_figure,
+    viewport_box,
+)
 from scripts.make_real360_sample import from_video_file
 
 
@@ -82,6 +89,37 @@ st.markdown(
         background: #ffffff;
         color: #334155;
         font-size: 0.88rem;
+    }
+    .demo-panel {
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        padding: 0.9rem;
+        background: #ffffff;
+    }
+    .demo-panel strong {
+        color: #0f172a;
+    }
+    .status-pill {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 0.28rem 0.62rem;
+        font-size: 0.84rem;
+        font-weight: 700;
+        color: #ffffff;
+        background: #16a34a;
+    }
+    .status-pill.warn {
+        background: #d97706;
+    }
+    .status-pill.risk {
+        background: #dc2626;
+    }
+    .trace-callout {
+        border-left: 5px solid #16a34a;
+        background: #f0fdf4;
+        border-radius: 8px;
+        padding: 0.75rem 0.9rem;
+        color: #14532d;
     }
     </style>
     """,
@@ -162,6 +200,73 @@ def segment_previews(video, segments, result, max_items: int = 6) -> list[tuple[
             )
         )
     return previews
+
+
+def guide_overview_image(video, segments, result, max_items: int = 8) -> Image.Image:
+    selected = [int(item) for item in result.selected[:max_items]]
+    if video.frames is None or not selected:
+        base = fallback_frame(video)
+    else:
+        frame_idx = int((segments.starts[selected[0]] + segments.ends[selected[0]] - 1) // 2)
+        base = video.frames[frame_idx]
+    image = Image.fromarray(base.astype(np.uint8)).convert("RGB")
+    image.thumbnail((1280, 640), Image.Resampling.BICUBIC)
+    draw = ImageDraw.Draw(image, "RGBA")
+    width, height = image.size
+    draw.rectangle((0, 0, width, height), fill=(2, 6, 23, 62))
+
+    points: list[tuple[int, int]] = []
+    for segment_idx in selected:
+        viewport = segments.viewport_xy[segment_idx]
+        x = int(np.clip(viewport[0], 0, 1) * (width - 1))
+        y = int(np.clip(viewport[1], 0, 1) * (height - 1))
+        points.append((x, y))
+
+    for start, end in zip(points[:-1], points[1:], strict=True):
+        _draw_arrow(draw, start, end, fill=(96, 165, 250, 230), width=5)
+
+    for order, (segment_idx, point) in enumerate(zip(selected, points, strict=True), start=1):
+        radius = 15
+        x, y = point
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=(249, 115, 22, 235))
+        draw.ellipse(
+            (x - radius, y - radius, x + radius, y + radius),
+            outline=(255, 255, 255, 245),
+            width=3,
+        )
+        label = str(order)
+        label_box = draw.textbbox((0, 0), label)
+        draw.text(
+            (x - (label_box[2] - label_box[0]) / 2, y - (label_box[3] - label_box[1]) / 2 - 1),
+            label,
+            fill=(255, 255, 255, 255),
+        )
+        time_label = format_seconds(float(segments.start_times[segment_idx]))
+        draw.rounded_rectangle(
+            (x + 14, y - 28, x + 112, y - 5),
+            radius=6,
+            fill=(15, 23, 42, 210),
+            outline=(148, 163, 184, 180),
+        )
+        draw.text((x + 21, y - 24), f"S{segment_idx} · {time_label}", fill=(248, 250, 252, 255))
+
+    draw.rounded_rectangle((14, 14, 310, 52), radius=8, fill=(15, 23, 42, 218))
+    draw.text((26, 25), "Recommended VR Guide Path", fill=(248, 250, 252, 255))
+    return image
+
+
+def _draw_arrow(draw: ImageDraw.ImageDraw, start: tuple[int, int], end: tuple[int, int], fill, width: int) -> None:
+    draw.line((start, end), fill=fill, width=width)
+    vector = np.asarray(end, dtype=np.float32) - np.asarray(start, dtype=np.float32)
+    length = float(np.linalg.norm(vector))
+    if length < 1e-6:
+        return
+    unit = vector / length
+    normal = np.asarray([-unit[1], unit[0]])
+    tip = np.asarray(end, dtype=np.float32)
+    left = tip - unit * 18 + normal * 9
+    right = tip - unit * 18 - normal * 9
+    draw.polygon([tuple(tip), tuple(left), tuple(right)], fill=fill)
 
 
 def event_segment_indices(segments, quantile: float = 0.62) -> np.ndarray:
@@ -442,7 +547,6 @@ def panorama_viewer_html(tour: list[dict[str, object]]) -> str:
         <button id="prev" title="上一个片段">‹</button>
         <button id="play" title="自动导览">▶</button>
         <button id="guide" title="回到推荐视角">◎</button>
-        <button id="stereo" title="双目 VR 预览">VR</button>
         <button id="fullscreen" title="全屏">⛶</button>
       </div>
     </div>
@@ -463,7 +567,6 @@ let pitch = tour[0]?.pitch || 0;
 let targetYaw = yaw;
 let targetPitch = pitch;
 let playing = false;
-let stereo = false;
 let dragging = false;
 let lastX = 0;
 let lastY = 0;
@@ -593,10 +696,6 @@ function bindEvents() {{
     lastAdvance = performance.now();
   }};
   document.getElementById('guide').onclick = () => guideToCurrent();
-  document.getElementById('stereo').onclick = () => {{
-    stereo = !stereo;
-    document.getElementById('stereo').style.background = stereo ? 'rgba(37,99,235,0.82)' : 'rgba(8,13,24,0.74)';
-  }};
   document.getElementById('fullscreen').onclick = () => stage.requestFullscreen?.();
 }}
 
@@ -649,13 +748,7 @@ function draw(now) {{
   pitch += (targetPitch - pitch) * 0.12;
   gl.clearColor(0.02, 0.03, 0.05, 1);
   gl.clear(gl.COLOR_BUFFER_BIT);
-  if (stereo) {{
-    const half = Math.floor(canvas.width / 2);
-    renderEye(0, 0, half, canvas.height, -0.025);
-    renderEye(half, 0, canvas.width - half, canvas.height, 0.025);
-  }} else {{
-    renderEye(0, 0, canvas.width, canvas.height, 0);
-  }}
+  renderEye(0, 0, canvas.width, canvas.height, 0);
   if (playing && now - lastAdvance > 3200) {{
     loadFrame((current + 1) % tour.length);
     lastAdvance = now;
@@ -873,6 +966,113 @@ def immersive_video_player_html(video_name: str, video_src: str, chapters: list[
       margin-top: 12px;
       background: #000;
     }
+    .guide-arrow {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 84px;
+      height: 84px;
+      margin-left: -42px;
+      margin-top: -42px;
+      display: grid;
+      place-items: center;
+      color: #fef3c7;
+      font-size: 34px;
+      font-weight: 800;
+      text-shadow: 0 2px 10px rgba(0,0,0,0.9);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 160ms ease, transform 160ms ease;
+    }
+    .telemetry-panel {
+      position: absolute;
+      top: 78px;
+      right: 14px;
+      width: 300px;
+      border: 1px solid rgba(74, 222, 128, 0.42);
+      border-radius: 8px;
+      background: rgba(5, 11, 23, 0.86);
+      color: #f8fafc;
+      padding: 12px;
+      backdrop-filter: blur(10px);
+      pointer-events: auto;
+      box-shadow: 0 18px 48px rgba(0,0,0,0.34);
+    }
+    .telemetry-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #dbeafe;
+      margin-bottom: 8px;
+    }
+    .rec-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #bbf7d0;
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .rec-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: #ef4444;
+      box-shadow: 0 0 0 0 rgba(239,68,68,0.72);
+      animation: pulse 1.2s infinite;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.72); }
+      70% { box-shadow: 0 0 0 8px rgba(239,68,68,0); }
+      100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+    }
+    .telemetry-title button, .trace-download-large {
+      border: 1px solid rgba(255,255,255,0.22);
+      border-radius: 8px;
+      background: #16a34a;
+      color: #f8fafc;
+      padding: 7px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .trace-download-large {
+      width: 100%;
+      margin-top: 10px;
+      font-size: 13px;
+    }
+    .telemetry-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 7px;
+    }
+    .telemetry-cell {
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 7px;
+      background: rgba(15,23,42,0.56);
+    }
+    .telemetry-cell span {
+      display: block;
+      color: #cbd5e1;
+      font-size: 11px;
+    }
+    .telemetry-cell strong {
+      display: block;
+      margin-top: 2px;
+      font-size: 18px;
+    }
+    .trace-map {
+      width: 100%;
+      height: 82px;
+      margin: 9px 0 2px;
+      border: 1px solid rgba(148,163,184,0.32);
+      border-radius: 8px;
+      background: rgba(15,23,42,0.66);
+    }
   </style>
 </head>
 <body>
@@ -887,11 +1087,26 @@ def immersive_video_player_html(video_name: str, video_src: str, chapters: list[
       <div class="button-row">
         <button id="guide" title="自动贴合推荐视角">◎</button>
         <button id="summary" title="只巡航摘要片段">Σ</button>
-        <button id="stereo" title="双目 VR 预览">VR</button>
+        <button id="traceDownload" title="下载观看轨迹 CSV">CSV</button>
         <button id="fullscreen" title="全屏">⛶</button>
       </div>
     </div>
     <div class="reticle"></div>
+    <div class="guide-arrow" id="guideArrow">➜</div>
+    <div class="telemetry-panel">
+      <div class="telemetry-title">
+        <span class="rec-pill"><span class="rec-dot"></span>REC 观看轨迹</span>
+        <button id="traceDownloadPanel">下载 CSV</button>
+      </div>
+      <div class="telemetry-grid">
+        <div class="telemetry-cell"><span>轨迹样本</span><strong id="traceCount">0</strong></div>
+        <div class="telemetry-cell"><span>视角误差</span><strong id="errorDeg">0°</strong></div>
+        <div class="telemetry-cell"><span>当前模式</span><strong id="modeName">Free</strong></div>
+        <div class="telemetry-cell"><span>舒适度</span><strong id="comfortScore">1.00</strong></div>
+      </div>
+      <canvas class="trace-map" id="traceMap"></canvas>
+      <button class="trace-download-large" id="traceDownloadLarge">导出 viewing_trace.csv</button>
+    </div>
     <div class="controlbar">
       <div class="transport">
         <div class="transport-main">
@@ -912,9 +1127,16 @@ const canvas = document.getElementById('viewer');
 const stage = document.getElementById('stage');
 const titleEl = document.getElementById('title');
 const statusEl = document.getElementById('status');
+const modeTextEl = document.getElementById('modeText');
 const timeEl = document.getElementById('time');
 const timeline = document.getElementById('timeline');
 const chapterStrip = document.getElementById('chapters');
+const guideArrow = document.getElementById('guideArrow');
+const traceCountEl = document.getElementById('traceCount');
+const errorDegEl = document.getElementById('errorDeg');
+const modeNameEl = document.getElementById('modeName');
+const comfortScoreEl = document.getElementById('comfortScore');
+const traceMap = document.getElementById('traceMap');
 const gl = canvas.getContext('webgl', { antialias: true });
 const video = document.createElement('video');
 video.src = videoSrc;
@@ -934,12 +1156,16 @@ let lastX = 0;
 let lastY = 0;
 let autoGuide = true;
 let summaryMode = false;
-let stereo = false;
 let activeChapter = -1;
 let currentTourIndex = 0;
 let program = null;
 let texture = null;
 let textureReady = false;
+let trace = [];
+let speedHistory = [];
+let lastTraceAt = 0;
+let lastTelemetryAt = 0;
+let previousPose = null;
 
 titleEl.textContent = videoTitle;
 
@@ -1081,16 +1307,16 @@ function bindEvents() {
   document.getElementById('guide').onclick = () => {
     autoGuide = !autoGuide;
     document.getElementById('guide').classList.toggle('active', autoGuide);
+    modeTextEl.textContent = autoGuide ? '自动导览 · 拖拽可临时偏离' : '自由观看 · 偏离时显示方向提示';
   };
   document.getElementById('summary').onclick = () => {
     summaryMode = !summaryMode;
     document.getElementById('summary').classList.toggle('active', summaryMode);
     if (summaryMode && chapters.length) seekChapter(currentTourIndex, true);
   };
-  document.getElementById('stereo').onclick = () => {
-    stereo = !stereo;
-    document.getElementById('stereo').classList.toggle('active', stereo);
-  };
+  document.getElementById('traceDownload').onclick = downloadTraceCsv;
+  document.getElementById('traceDownloadPanel').onclick = downloadTraceCsv;
+  document.getElementById('traceDownloadLarge').onclick = downloadTraceCsv;
   document.getElementById('fullscreen').onclick = () => stage.requestFullscreen?.();
   timeline.addEventListener('input', () => {
     if (Number.isFinite(video.duration) && video.duration > 0) {
@@ -1216,7 +1442,7 @@ function renderEye(x, y, width, height, offset) {
   gl.drawArrays(gl.TRIANGLES, 0, 6);
 }
 
-function render() {
+function render(now) {
   resize();
   applyGuide();
   yaw += angleDelta(targetYaw, yaw) * 0.1;
@@ -1225,15 +1451,175 @@ function render() {
   gl.clearColor(0.02, 0.03, 0.05, 1);
   gl.clear(gl.COLOR_BUFFER_BIT);
   if (textureReady) {
-    if (stereo) {
-      const half = Math.floor(canvas.width / 2);
-      renderEye(0, 0, half, canvas.height, -0.025);
-      renderEye(half, 0, canvas.width - half, canvas.height, 0.025);
-    } else {
-      renderEye(0, 0, canvas.width, canvas.height, 0);
-    }
+    renderEye(0, 0, canvas.width, canvas.height, 0);
   }
+  recordTrace(now || performance.now());
+  updateTelemetry(now || performance.now());
   requestAnimationFrame(render);
+}
+
+function activeGuideChapter() {
+  if (!chapters.length) return null;
+  const idx = chapterIndexAt(video.currentTime);
+  if (idx >= 0) return chapters[idx];
+  return nearestChapter(video.currentTime);
+}
+
+function angularErrorDeg(chapter) {
+  if (!chapter) return 0;
+  const yawError = angleDelta(yaw, chapter.yaw);
+  const pitchError = pitch - clamp(chapter.pitch, -1.42, 1.42);
+  const cosValue =
+    Math.sin(pitch) * Math.sin(chapter.pitch) +
+    Math.cos(pitch) * Math.cos(chapter.pitch) * Math.cos(yawError);
+  return Math.acos(clamp(cosValue, -1, 1)) * 180 / Math.PI;
+}
+
+function recordTrace(now) {
+  if (now - lastTraceAt < 250) return;
+  if (video.paused && !dragging && trace.length > 0) return;
+  const chapter = activeGuideChapter();
+  const currentError = angularErrorDeg(chapter);
+  const time = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+  if (previousPose) {
+    const dt = Math.max((now - previousPose.now) / 1000, 1e-3);
+    const dyaw = angleDelta(yaw, previousPose.yaw);
+    const dpitch = pitch - previousPose.pitch;
+    const speed = Math.sqrt(dyaw * dyaw + dpitch * dpitch) * 180 / Math.PI / dt;
+    speedHistory.push(speed);
+    if (speedHistory.length > 40) speedHistory.shift();
+  }
+  previousPose = { now, yaw, pitch };
+  trace.push({
+    wall_ms: Math.round(now),
+    video_sec: Number(time.toFixed(3)),
+    mode: summaryMode ? 'summary' : (autoGuide ? 'guided' : 'free'),
+    active_chapter: activeChapter,
+    yaw_deg: Number((yaw * 180 / Math.PI).toFixed(3)),
+    pitch_deg: Number((pitch * 180 / Math.PI).toFixed(3)),
+    fov_deg: Number((fov * 180 / Math.PI).toFixed(3)),
+    recommended_yaw_deg: chapter ? Number((chapter.yaw * 180 / Math.PI).toFixed(3)) : '',
+    recommended_pitch_deg: chapter ? Number((chapter.pitch * 180 / Math.PI).toFixed(3)) : '',
+    error_deg: Number(currentError.toFixed(3)),
+  });
+  lastTraceAt = now;
+}
+
+function updateTelemetry(now) {
+  if (now - lastTelemetryAt < 160) return;
+  const chapter = activeGuideChapter();
+  const currentError = angularErrorDeg(chapter);
+  traceCountEl.textContent = String(trace.length);
+  errorDegEl.textContent = currentError.toFixed(0) + '°';
+  modeNameEl.textContent = summaryMode ? 'Summary' : (autoGuide ? 'Guided' : 'Free');
+  const avgSpeed = speedHistory.length ? speedHistory.reduce((a, b) => a + b, 0) / speedHistory.length : 0;
+  const comfort = Math.exp(-currentError / 95) * Math.exp(-avgSpeed / 180);
+  comfortScoreEl.textContent = comfort.toFixed(2);
+  updateGuideArrow(chapter, currentError);
+  drawTraceMap(chapter);
+  lastTelemetryAt = now;
+}
+
+function updateGuideArrow(chapter, currentError) {
+  if (!chapter || autoGuide || currentError < 18) {
+    guideArrow.style.opacity = '0';
+    return;
+  }
+  const direction = angleDelta(chapter.yaw, yaw);
+  guideArrow.style.opacity = String(clamp((currentError - 18) / 36, 0.2, 0.92));
+  guideArrow.style.transform = 'rotate(' + direction.toFixed(3) + 'rad)';
+}
+
+function downloadTraceCsv() {
+  const rows = trace.length ? trace : [{
+    wall_ms: 0,
+    video_sec: 0,
+    mode: 'empty',
+    active_chapter: -1,
+    yaw_deg: 0,
+    pitch_deg: 0,
+    fov_deg: fov * 180 / Math.PI,
+    recommended_yaw_deg: '',
+    recommended_pitch_deg: '',
+    error_deg: 0,
+  }];
+  const columns = Object.keys(rows[0]);
+  const csv = [
+    columns.join(','),
+    ...rows.map((row) => columns.map((column) => csvCell(row[column])).join(',')),
+  ].join('\\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 's3_360_viewing_trace.csv';
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function drawTraceMap(chapter) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(1, Math.floor(traceMap.clientWidth * dpr));
+  const height = Math.max(1, Math.floor(traceMap.clientHeight * dpr));
+  if (traceMap.width !== width || traceMap.height !== height) {
+    traceMap.width = width;
+    traceMap.height = height;
+  }
+  const ctx = traceMap.getContext('2d');
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.86)';
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = 'rgba(148, 163, 184, 0.24)';
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 4; i += 1) {
+    const x = width * i / 4;
+    const y = height * i / 4;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+  }
+  const recent = trace.slice(-120);
+  if (recent.length > 1) {
+    ctx.strokeStyle = '#60a5fa';
+    ctx.lineWidth = 2 * dpr;
+    ctx.beginPath();
+    recent.forEach((item, idx) => {
+      const point = tracePoint(item.yaw_deg, item.pitch_deg, width, height);
+      if (idx === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    });
+    ctx.stroke();
+  }
+  if (chapter) {
+    const target = tracePoint(chapter.yaw * 180 / Math.PI, chapter.pitch * 180 / Math.PI, width, height);
+    ctx.fillStyle = '#f97316';
+    ctx.beginPath();
+    ctx.arc(target.x, target.y, 5 * dpr, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const current = tracePoint(yaw * 180 / Math.PI, pitch * 180 / Math.PI, width, height);
+  ctx.fillStyle = '#22c55e';
+  ctx.beginPath();
+  ctx.arc(current.x, current.y, 4 * dpr, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function tracePoint(yawDeg, pitchDeg, width, height) {
+  const x = ((wrapDeg(yawDeg) + 180) / 360) * width;
+  const y = (0.5 - clamp(pitchDeg, -90, 90) / 180) * height;
+  return { x, y };
+}
+
+function wrapDeg(value) {
+  return ((((value + 180) % 360) + 360) % 360) - 180;
+}
+
+function csvCell(value) {
+  const raw = String(value ?? '');
+  return /[",\\n]/.test(raw) ? '"' + raw.replaceAll('"', '""') + '"' : raw;
 }
 
 function formatTime(value) {
@@ -1317,6 +1703,7 @@ st.markdown(
     <span class="flow-chip">Step 2: 2D Event Video</span>
     <span class="flow-chip">Step 3: S3-360-Guide Summary</span>
     <span class="flow-chip">Extension: YouTube-style 360 Player</span>
+    <span class="flow-chip">Extension: Viewing Trace & Comfort</span>
     """,
     unsafe_allow_html=True,
 )
@@ -1326,7 +1713,7 @@ st.caption(
 )
 st.info(
     "当前默认使用远程最新版的 S3-360-Guide：在 S3-360 基础上加入事件覆盖增益和视角稳定性约束；"
-    "页面同时保留三阶段流程、原视频 360°播放器、2D event video 导出和最终短 2D 视频导出。"
+    "页面同时保留三阶段流程、原视频 360°播放器、观看轨迹记录、舒适度评估、2D event video 导出和最终短 2D 视频导出。"
     "如果长视频摘要覆盖太少，可以提高左侧“最多采样帧数”。"
 )
 
@@ -1345,6 +1732,7 @@ st.markdown(
     <div class="step-band">
       <strong>新增体验：</strong>直接播放上传的原始 360°视频，可拖拽视角、滚轮缩放、全屏观看；
       摘要算法选中的片段会显示为章节，开启“Σ”后可只巡航最终摘要片段，开启“◎”后会自动贴合推荐视角。
+      播放器会记录浏览器内观看轨迹，并可导出 CSV 用于实验分析。
     </div>
     """,
     unsafe_allow_html=True,
@@ -1352,7 +1740,7 @@ st.markdown(
 if len(uploaded_content) > 120 * 1024 * 1024:
     st.warning("当前视频较大，全景播放器首次载入可能比较慢；若答辩现场卡顿，建议准备一份压缩到 1080p/1440p 的 MP4。")
 video_chapters = guided_video_chapters(segments, result)
-st.iframe(
+components.html(
     immersive_video_player_html(
         uploaded_video.name,
         uploaded_video_data_url(uploaded_video.name, uploaded_content),
@@ -1360,6 +1748,80 @@ st.iframe(
     ),
     height=660,
 )
+
+st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+st.subheader("Extension. VR Guide Lab（导览展示页）")
+st.markdown(
+    """
+    <div class="step-band">
+      <strong>扩展实验：</strong>把摘要片段转成一条可展示的 360°导览路线，并在播放器中记录用户观看轨迹。
+      这部分用于说明系统不仅能选片段，还能评价“看哪里、怎么引导、看得是否平滑”。
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+comfort_score = float(metric_row["guide_comfort_score"])
+if comfort_score >= 0.72:
+    comfort_label, comfort_class = "平滑", ""
+elif comfort_score >= 0.45:
+    comfort_label, comfort_class = "中等", "warn"
+else:
+    comfort_label, comfort_class = "跳变偏大", "risk"
+
+lab_cols = st.columns([1.35, 0.85])
+with lab_cols[0]:
+    st.image(
+        guide_overview_image(video, segments, result),
+        caption="推荐导览路线：编号点表示摘要片段，箭头表示系统建议的观看方向切换顺序。",
+        width="stretch",
+    )
+with lab_cols[1]:
+    st.markdown(
+        f"""
+        <div class="demo-panel">
+          <span class="status-pill {comfort_class}">导览舒适度：{comfort_label}</span>
+          <div style="height:0.75rem"></div>
+          <strong>展示重点</strong>
+          <div style="margin-top:0.45rem;color:#334155;line-height:1.55">
+            播放器右上角的 <b>REC 观看轨迹</b> 会实时累计样本；
+            自由拖拽时绿色点表示当前视角，橙色点表示推荐视角。
+            点击 <b>导出 viewing_trace.csv</b> 可以拿到实验数据。
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="trace-callout">
+          课堂演示时可以先开启“Σ”摘要巡航，再关闭“◎”自由拖拽，右上角会显示视角误差和轨迹小地图。
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+guide_cols = st.columns(4)
+guide_cols[0].metric("转向角均值", f"{metric_row['guide_avg_angle_deg']:.1f}°")
+guide_cols[1].metric("最大跳变", f"{metric_row['guide_max_angle_deg']:.1f}°")
+guide_cols[2].metric("转向速度", f"{metric_row['guide_avg_speed_deg_s']:.1f}°/s")
+guide_cols[3].metric("舒适度", f"{comfort_score:.3f}")
+
+story_items = segment_previews(video, segments, result, max_items=4)
+if story_items:
+    st.markdown('<div class="story-label">摘要导览片段缩略图</div>', unsafe_allow_html=True)
+    story_cols = st.columns(len(story_items))
+    for col, (selected_segment, image) in zip(story_cols, story_items, strict=True):
+        with col:
+            st.image(
+                image,
+                caption=f"S{selected_segment} · {segment_time_label(segments, selected_segment)}",
+                width="stretch",
+            )
+
+with st.expander("技术细节：yaw / pitch 坐标路径与明细表"):
+    st.plotly_chart(guide_path_figure(segments, result), width="stretch")
+    st.dataframe(guide_path_table(segments, result), width="stretch", hide_index=True)
 
 safe_video_name = video.name.lower().replace(" ", "_").replace("/", "_")
 safe_method_name = method_slug(method_name)
@@ -1456,7 +1918,7 @@ st.markdown(
 )
 tour = vr_tour_frames(video, segments, result)
 if tour:
-    st.iframe(panorama_viewer_html(tour), height=580)
+    components.html(panorama_viewer_html(tour), height=580)
 else:
     st.info("当前数据没有 frames 字段，无法打开全景浏览模式。")
 
