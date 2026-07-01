@@ -35,6 +35,7 @@ def evaluate_summary(
         "event_coverage": event_coverage(segments, result.selected),
         "avg_shot_jump": avg_shot_jump(segments, result.selected),
         "adjacent_visual_similarity": adjacent_visual_similarity(segments, result.selected),
+        **guide_comfort_metrics(segments, result.selected),
     }
 
 
@@ -94,6 +95,39 @@ def adjacent_visual_similarity(segments: SegmentTable, selected: np.ndarray) -> 
     return float(np.mean(sims))
 
 
+def guide_comfort_metrics(segments: SegmentTable, selected: np.ndarray) -> dict[str, float]:
+    """Estimate desktop-VR guide smoothness from the recommended viewport path."""
+    if len(selected) < 2:
+        return {
+            "guide_avg_angle_deg": 0.0,
+            "guide_max_angle_deg": 0.0,
+            "guide_avg_speed_deg_s": 0.0,
+            "guide_comfort_score": 1.0,
+        }
+
+    ordered = np.asarray(sorted(selected.tolist()))
+    yaw_pitch = _viewport_to_yaw_pitch(segments.viewport_xy[ordered])
+    angle_deg = np.degrees(
+        [
+            _angular_distance(yaw_pitch[idx - 1], yaw_pitch[idx])
+            for idx in range(1, len(yaw_pitch))
+        ]
+    )
+    delta_t = np.diff((segments.start_times[ordered] + segments.end_times[ordered]) * 0.5)
+    delta_t = np.maximum(delta_t, 1e-3)
+    speed_deg_s = angle_deg / delta_t
+    avg_angle = float(np.mean(angle_deg))
+    max_angle = float(np.max(angle_deg))
+    avg_speed = float(np.mean(speed_deg_s))
+    comfort_score = float(np.exp(-avg_angle / 75.0) * np.exp(-avg_speed / 140.0))
+    return {
+        "guide_avg_angle_deg": avg_angle,
+        "guide_max_angle_deg": max_angle,
+        "guide_avg_speed_deg_s": avg_speed,
+        "guide_comfort_score": comfort_score,
+    }
+
+
 def selection_table(segments: SegmentTable, result: SummaryResult) -> pd.DataFrame:
     rows = []
     for rank, idx in enumerate(result.selected, start=1):
@@ -110,6 +144,32 @@ def selection_table(segments: SegmentTable, result: SummaryResult) -> pd.DataFra
                 "score": float(result.score[idx]),
             }
         )
+    return pd.DataFrame(rows)
+
+
+def guide_path_table(segments: SegmentTable, result: SummaryResult) -> pd.DataFrame:
+    rows = []
+    ordered = np.asarray(sorted(result.selected.tolist()))
+    yaw_pitch = _viewport_to_yaw_pitch(segments.viewport_xy[ordered]) if len(ordered) else np.empty((0, 2))
+    previous = None
+    previous_time = None
+    for rank, (idx, pose) in enumerate(zip(ordered, yaw_pitch, strict=True), start=1):
+        center_time = float((segments.start_times[idx] + segments.end_times[idx]) * 0.5)
+        jump_deg = 0.0 if previous is None else float(np.degrees(_angular_distance(previous, pose)))
+        speed = 0.0 if previous_time is None else jump_deg / max(center_time - previous_time, 1e-3)
+        rows.append(
+            {
+                "rank": rank,
+                "segment": int(idx),
+                "center_sec": round(center_time, 2),
+                "yaw_deg": round(float(np.degrees(pose[0])), 2),
+                "pitch_deg": round(float(np.degrees(pose[1])), 2),
+                "jump_deg": round(jump_deg, 2),
+                "speed_deg_s": round(speed, 2),
+            }
+        )
+        previous = pose
+        previous_time = center_time
     return pd.DataFrame(rows)
 
 
@@ -164,3 +224,30 @@ def _l2_normalize(values: np.ndarray) -> np.ndarray:
     values = np.asarray(values, dtype=np.float32)
     denom = np.linalg.norm(values, axis=1, keepdims=True)
     return values / np.maximum(denom, 1e-8)
+
+
+def _viewport_to_yaw_pitch(viewport_xy: np.ndarray) -> np.ndarray:
+    viewport_xy = np.asarray(viewport_xy, dtype=np.float32)
+    yaw = (viewport_xy[:, 0] - 0.5) * 2 * np.pi
+    pitch = (0.5 - viewport_xy[:, 1]) * np.pi
+    return np.column_stack([yaw, pitch])
+
+
+def _angular_distance(first: np.ndarray, second: np.ndarray) -> float:
+    yaw1, pitch1 = first
+    yaw2, pitch2 = second
+    v1 = np.array(
+        [
+            np.cos(pitch1) * np.sin(yaw1),
+            np.sin(pitch1),
+            -np.cos(pitch1) * np.cos(yaw1),
+        ]
+    )
+    v2 = np.array(
+        [
+            np.cos(pitch2) * np.sin(yaw2),
+            np.sin(pitch2),
+            -np.cos(pitch2) * np.cos(yaw2),
+        ]
+    )
+    return float(np.arccos(np.clip(np.dot(v1, v2), -1.0, 1.0)))

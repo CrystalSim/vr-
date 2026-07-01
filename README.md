@@ -18,7 +18,9 @@
 - Event sub-volume 诊断：将高显著片段按时间邻近和推荐视角邻近聚合成事件子体，贴合原论文的 2D Video Production 思路
 - Precision / Recall / F-score / 重复率 / 事件覆盖率 / 镜头跳变等指标
 - Streamlit 网页展示：ERP 视图、显著性热力图、虚拟视角框、时间轴和方法对比
-- YouTube-style 360°原视频播放器：直接播放上传的 360°视频，支持拖拽视角、滚轮缩放、摘要章节巡航、推荐视角自动贴合、双目 VR 预览和全屏
+- YouTube-style 360°原视频播放器：直接播放上传的 360°视频，支持拖拽视角、滚轮缩放、摘要章节巡航、推荐视角自动贴合和全屏
+- 浏览器内 VR 导览实验：记录用户观看轨迹，导出 `viewing_trace.csv`，实时显示推荐视角误差和舒适度估计
+- VR 舒适度评价面板：统计推荐导览路径的平均转向角、最大转向角、平均转向速度和舒适度分数
 - 摘要关键帧 360°/VR 巡航：把摘要片段渲染成可拖拽的全景视角，用于快速验证推荐视角是否合理
 - Step 2 2D event video 导出、Step 3 最终短 2D summary video 导出、GIF 摘要动图导出
 
@@ -93,6 +95,8 @@ conda env update -f environment.yml --prune
 conda activate s3-360
 ```
 
+这会安装支持 `width="stretch"` 的新版 Streamlit；如果网页 Demo 报旧版参数错误，请先执行上面的环境更新命令。
+
 ## 2. 生成 Demo 数据
 
 生成 SHD360 小样本：
@@ -166,6 +170,7 @@ streamlit run app.py
 
 - YouTube-style 360°原视频播放器：直接播放上传原视频，并把摘要片段显示成可点击章节。
 - Paper Alignment 相机运动与事件子体诊断：展示静态/运动相机判别、推荐 saliency 路径和 event sub-volume 明细。
+- Extension Viewing Trace & Comfort：在浏览器里记录观看方向，导出轨迹 CSV，并评价推荐导览路径的舒适度。
 - Step 1 Saliency Maps：展示原始全景帧、热力图和重要视角框。
 - Step 2 2D Event Video：展示事件片段表，并可导出普通 2D MP4。
 - Extension 摘要关键帧 360°/VR 巡航：展示摘要片段的可拖拽全景浏览模式。
@@ -201,6 +206,8 @@ streamlit run app.py
 - `note`: 页面展示备注，可选
 
 HDF5 读取器会自动尝试常见 key：`features`、`saliency`、`labels`、`gtscore`、`user_summary`、`change_points` 等。
+
+网页播放器导出的观看轨迹 CSV 字段包括 `video_sec`、`mode`、`yaw_deg`、`pitch_deg`、`fov_deg`、`recommended_yaw_deg`、`recommended_pitch_deg` 和 `error_deg`。当前扩展不依赖 VR 头显，适合先用普通浏览器完成交互实验与答辩展示。
 
 更多答辩包装说明见 `docs/project_packaging.md`。
 
