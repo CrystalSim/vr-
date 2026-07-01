@@ -654,8 +654,11 @@ method_name = "S3-360-Guide"
 st.sidebar.caption("摘要方法：S3-360-Guide")
 segment_size = st.sidebar.slider("片段长度（帧）", 2, 48, 8, 2)
 budget_ratio = st.sidebar.slider("摘要比例", 0.03, 0.7, 0.2, 0.01)
-video_max_frames = st.sidebar.slider("视频抽帧数量", 24, 360, 144, 12)
-video_sample_step = 12
+video_max_frames = st.sidebar.slider("最多采样帧数", 96, 1200, 360, 24)
+video_sample_step = st.sidebar.slider("兜底抽帧步长", 1, 60, 12, 1)
+st.sidebar.caption(
+    "优先在整段视频上均匀采样；若读取不到总帧数，会先按兜底步长扫完整段，再均匀压到最多采样帧数。"
+)
 
 st.title("S³-360 360°视频摘要与智能导览")
 st.caption("上传一段 360°视频，系统会自动提取关键片段，生成摘要视频，并提供可拖拽的 360°导览视角。")
@@ -699,6 +702,7 @@ st.caption(
 st.info(
     "当前默认使用远程最新版的 S3-360-Guide：在 S3-360 基础上加入事件覆盖增益和视角稳定性约束；"
     "页面同时保留三阶段流程、2D event video 导出、最终短 2D 视频导出和 360°/VR 预览。"
+    "如果长视频摘要覆盖太少，可以提高左侧“最多采样帧数”。"
 )
 
 metric_row = metrics.set_index("method").loc[method_name]

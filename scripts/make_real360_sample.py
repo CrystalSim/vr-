@@ -24,8 +24,8 @@ def main() -> None:
     source.add_argument("--frames-dir", default=None, help="Local SHD360 Frames/<sequence> directory.")
     parser.add_argument("--out", default="data/real360_sample/real360_tennis.npz")
     parser.add_argument("--download-dir", default="data/raw/videos")
-    parser.add_argument("--max-frames", type=int, default=144)
-    parser.add_argument("--sample-step", type=int, default=10, help="Keep every Nth decoded frame.")
+    parser.add_argument("--max-frames", type=int, default=360)
+    parser.add_argument("--sample-step", type=int, default=12, help="Keep every Nth decoded frame.")
     parser.add_argument("--width", type=int, default=512)
     parser.add_argument("--height", type=int, default=256)
     args = parser.parse_args()
@@ -88,14 +88,16 @@ def from_video_file(path: Path, args: argparse.Namespace) -> VideoData:
             for idx, frame in enumerate(reader):
                 if idx % args.sample_step != 0:
                     continue
-                frame_times.append(len(frames) / 4.0)
+                frame_times.append(idx / fps if fps > 0 else len(frames) / 4.0)
                 frames.append(_resize_frame(frame, args.width, args.height))
-                if len(frames) >= args.max_frames:
-                    break
     finally:
         reader.close()
     if not frames:
         raise RuntimeError(f"No frames decoded from {path}")
+    if len(frames) > args.max_frames:
+        chosen = np.linspace(0, len(frames) - 1, args.max_frames, dtype=int)
+        frames = [frames[int(index)] for index in chosen]
+        frame_times = [frame_times[int(index)] for index in chosen]
     return build_video_data(
         np.asarray(frames, dtype=np.uint8),
         name=path.stem,
