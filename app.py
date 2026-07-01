@@ -16,7 +16,9 @@ import numpy as np
 import streamlit as st
 from PIL import Image, ImageDraw
 
+from s3_360.camera_motion import analyze_camera_motion
 from s3_360.evaluation import evaluate_all, selection_table
+from s3_360.events import build_event_subvolumes, covered_segment_ratio
 from s3_360.methods import summarize_all
 from s3_360.segmentation import make_segments
 from s3_360.video import write_event_video, write_storyboard_video, write_summary_video
@@ -247,6 +249,33 @@ def format_seconds(seconds: float) -> str:
     if minutes:
         return f"{minutes}:{remaining:04.1f}"
     return f"{remaining:.1f}s"
+
+
+def camera_type_label(camera_type: str) -> str:
+    labels = {
+        "static": "静态相机",
+        "moving": "运动相机",
+        "unknown": "无法判断",
+    }
+    return labels.get(camera_type, camera_type)
+
+
+def event_volume_rows(event_volumes) -> list[dict[str, object]]:
+    rows = []
+    for event in event_volumes:
+        rows.append(
+            {
+                "event": event.event_id,
+                "time": f"{format_seconds(event.start_time)} - {format_seconds(event.end_time)}",
+                "segments": event.segment_count,
+                "duration": format_seconds(event.duration),
+                "center_x": f"{event.center_xy[0]:.2f}",
+                "center_y": f"{event.center_xy[1]:.2f}",
+                "mean_saliency": f"{event.mean_saliency:.3f}",
+                "peak_saliency": f"{event.peak_saliency:.3f}",
+            }
+        )
+    return rows
 
 
 def sampled_duration(video) -> float:
@@ -1304,6 +1333,9 @@ segments = make_segments(video, segment_size=segment_size)
 results = summarize_all(segments, budget_ratio=budget_ratio)
 result = results[method_name]
 metrics = evaluate_all(segments, results)
+camera_motion = analyze_camera_motion(video.frames)
+event_volumes = build_event_subvolumes(segments)
+event_coverage = covered_segment_ratio(event_volumes, segments)
 
 source_text = video.source or video.name
 note_text = f"。{video.note}" if video.note else ""
@@ -1337,6 +1369,37 @@ metric_cols[1].metric("Precision", f"{metric_row['precision']:.3f}")
 metric_cols[2].metric("Recall", f"{metric_row['recall']:.3f}")
 metric_cols[3].metric("重复率", f"{metric_row['repeat_rate']:.3f}")
 metric_cols[4].metric("事件覆盖率", f"{metric_row['event_coverage']:.3f}")
+
+st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+st.subheader("Paper Alignment. 相机运动与事件子体诊断")
+st.markdown(
+    """
+    <div class="step-band">
+      <strong>论文对应：</strong>原论文先判断 360°视频由静态相机还是运动相机拍摄，再选择更合适的 saliency 方法；
+      随后把高显著区域跨时间聚合成 spatio-temporal sub-volume。这里给出一个轻量可解释实现。
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+diagnostic_cols = st.columns(4)
+diagnostic_cols[0].metric(
+    "相机类型",
+    camera_type_label(camera_motion.camera_type),
+    f"{camera_motion.confidence:.0%} confidence",
+)
+diagnostic_cols[1].metric("Pole motion", f"{camera_motion.motion_score:.3f}")
+diagnostic_cols[2].metric("事件子体", str(len(event_volumes)))
+diagnostic_cols[3].metric("事件覆盖", f"{event_coverage:.0%}")
+st.caption(
+    f"推荐 saliency 路径：{camera_motion.recommended_saliency}。"
+    "该诊断用于解释系统如何从原论文的静态/运动相机分支过渡到后续显著性与事件建模。"
+)
+with st.expander("查看 event sub-volume 明细"):
+    rows = event_volume_rows(event_volumes)
+    if rows:
+        st.dataframe(rows, width="stretch", hide_index=True)
+    else:
+        st.info("当前视频没有形成稳定的高显著事件子体。")
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
 st.subheader("YouTube-style 360° 原视频播放器")

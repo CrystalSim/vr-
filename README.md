@@ -14,6 +14,8 @@
 - Uniform、Saliency-only、Importance-only、Saliency+Importance 基线
 - S³-360：显著性、重要性、多样性、连续性联合优化
 - S³-360-Guide 改进方法：加入事件覆盖增益和视角稳定性约束，面向普通屏幕导览体验优化
+- 轻量相机运动判别：分析 ERP 顶部/底部区域的帧间变化，判断静态相机或运动相机，并解释对应 saliency 路径
+- Event sub-volume 诊断：将高显著片段按时间邻近和推荐视角邻近聚合成事件子体，贴合原论文的 2D Video Production 思路
 - Precision / Recall / F-score / 重复率 / 事件覆盖率 / 镜头跳变等指标
 - Streamlit 网页展示：ERP 视图、显著性热力图、虚拟视角框、时间轴和方法对比
 - YouTube-style 360°原视频播放器：直接播放上传的 360°视频，支持拖拽视角、滚轮缩放、摘要章节巡航、推荐视角自动贴合、双目 VR 预览和全屏
@@ -163,6 +165,7 @@ streamlit run app.py
 网页中按论文流程组织：
 
 - YouTube-style 360°原视频播放器：直接播放上传原视频，并把摘要片段显示成可点击章节。
+- Paper Alignment 相机运动与事件子体诊断：展示静态/运动相机判别、推荐 saliency 路径和 event sub-volume 明细。
 - Step 1 Saliency Maps：展示原始全景帧、热力图和重要视角框。
 - Step 2 2D Event Video：展示事件片段表，并可导出普通 2D MP4。
 - Extension 摘要关键帧 360°/VR 巡航：展示摘要片段的可拖拽全景浏览模式。
