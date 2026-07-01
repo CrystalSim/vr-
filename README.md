@@ -16,7 +16,8 @@
 - S³-360-Guide 改进方法：加入事件覆盖增益和视角稳定性约束，面向普通屏幕导览体验优化
 - Precision / Recall / F-score / 重复率 / 事件覆盖率 / 镜头跳变等指标
 - Streamlit 网页展示：ERP 视图、显著性热力图、虚拟视角框、时间轴和方法对比
-- 360°/VR 浏览模式：把摘要片段渲染成可拖拽的全景视角，支持自动导览、推荐视角回正、双目 VR 预览和全屏
+- YouTube-style 360°原视频播放器：直接播放上传的 360°视频，支持拖拽视角、滚轮缩放、摘要章节巡航、推荐视角自动贴合、双目 VR 预览和全屏
+- 摘要关键帧 360°/VR 巡航：把摘要片段渲染成可拖拽的全景视角，用于快速验证推荐视角是否合理
 - Step 2 2D event video 导出、Step 3 最终短 2D summary video 导出、GIF 摘要动图导出
 
 项目默认优先使用 `data/shd360_sample/shd360_tiny.npz`。这个 tiny sample 来自 SHD360 官方仓库公开的 teaser 图，用来先替换掉抽象模拟画面，让网页展示真实 360° ERP 场景、显著人体区域和虚拟视角框。
@@ -161,9 +162,10 @@ streamlit run app.py
 
 网页中按论文流程组织：
 
+- YouTube-style 360°原视频播放器：直接播放上传原视频，并把摘要片段显示成可点击章节。
 - Step 1 Saliency Maps：展示原始全景帧、热力图和重要视角框。
 - Step 2 2D Event Video：展示事件片段表，并可导出普通 2D MP4。
-- Extension 360°/VR 交互预览：展示项目新增的可拖拽全景浏览模式。
+- Extension 摘要关键帧 360°/VR 巡航：展示摘要片段的可拖拽全景浏览模式。
 - Step 3 Final Output：展示最终摘要片段，并可导出短 2D MP4。
 
 ## 5. VSCode 使用

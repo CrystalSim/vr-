@@ -14,7 +14,6 @@ sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import streamlit as st
-import streamlit.components.v1 as components
 from PIL import Image, ImageDraw
 
 from s3_360.evaluation import evaluate_all, selection_table
@@ -97,7 +96,22 @@ def convert_uploaded_video(name: str, content: bytes, max_frames: int, sample_st
         tmp.write(content)
         tmp_path = Path(tmp.name)
     args = SimpleNamespace(max_frames=max_frames, sample_step=sample_step, width=512, height=256)
-    return from_video_file(tmp_path, args)
+    try:
+        return from_video_file(tmp_path, args)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@st.cache_data(show_spinner=False)
+def uploaded_video_data_url(name: str, content: bytes) -> str:
+    mime_by_suffix = {
+        ".mp4": "video/mp4",
+        ".m4v": "video/mp4",
+        ".mov": "video/quicktime",
+    }
+    mime = mime_by_suffix.get(Path(name).suffix.lower(), "video/mp4")
+    encoded = base64.b64encode(content).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
 
 
 def fallback_frame(video) -> np.ndarray:
@@ -171,7 +185,7 @@ def download_video_button(path: Path, label: str) -> None:
         data=path.read_bytes(),
         file_name=path.name,
         mime="video/mp4",
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -269,6 +283,26 @@ def vr_tour_frames(video, segments, result, max_items: int = 8) -> list[dict[str
             }
         )
     return tour
+
+
+def guided_video_chapters(segments, result) -> list[dict[str, object]]:
+    chapters = []
+    for order, segment_idx in enumerate(result.selected, start=1):
+        segment_idx = int(segment_idx)
+        viewport = segments.viewport_xy[segment_idx]
+        chapters.append(
+            {
+                "label": f"摘要片段 {order}",
+                "segment": segment_idx,
+                "time": segment_time_label(segments, segment_idx),
+                "start": float(segments.start_times[segment_idx]),
+                "end": float(max(segments.end_times[segment_idx], segments.start_times[segment_idx] + 0.5)),
+                "yaw": float((viewport[0] - 0.5) * 2 * np.pi),
+                "pitch": float((0.5 - viewport[1]) * np.pi),
+                "score": float(result.score[segment_idx]) if len(result.score) > segment_idx else 0.0,
+            }
+        )
+    return chapters
 
 
 def panorama_viewer_html(tour: list[dict[str, object]]) -> str:
@@ -642,6 +676,595 @@ function clamp(value, min, max) {{
 """
 
 
+def immersive_video_player_html(video_name: str, video_src: str, chapters: list[dict[str, object]]) -> str:
+    template = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #05070d;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .stage {
+      position: relative;
+      height: 640px;
+      background: #05070d;
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+      touch-action: none;
+    }
+    canvas.dragging {
+      cursor: grabbing;
+    }
+    .topbar {
+      position: absolute;
+      inset: 14px 14px auto 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      pointer-events: none;
+    }
+    .badge, .controlbar, .chapter button {
+      border: 1px solid rgba(255,255,255,0.22);
+      background: rgba(8, 13, 24, 0.76);
+      color: #f8fafc;
+      border-radius: 8px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 10px 36px rgba(0,0,0,0.22);
+    }
+    .badge {
+      max-width: min(560px, 70%);
+      padding: 9px 11px;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .badge strong {
+      display: block;
+      font-size: 15px;
+      margin-bottom: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .mode {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: 8px;
+      color: #bfdbfe;
+      font-size: 12px;
+    }
+    .button-row {
+      display: flex;
+      gap: 8px;
+      pointer-events: auto;
+    }
+    .button-row button, .transport button {
+      width: 38px;
+      height: 38px;
+      border: 1px solid rgba(255,255,255,0.22);
+      background: rgba(8, 13, 24, 0.76);
+      color: #f8fafc;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 700;
+      backdrop-filter: blur(10px);
+    }
+    .button-row button.active, .transport button.active {
+      background: rgba(37, 99, 235, 0.86);
+      border-color: #93c5fd;
+    }
+    .reticle {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 42px;
+      height: 42px;
+      margin-left: -21px;
+      margin-top: -21px;
+      border: 2px solid rgba(255,255,255,0.86);
+      border-radius: 50%;
+      box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.96), 0 0 28px rgba(59, 130, 246, 0.42);
+      pointer-events: none;
+      opacity: 0.86;
+    }
+    .reticle::before, .reticle::after {
+      content: "";
+      position: absolute;
+      background: rgba(255,255,255,0.86);
+    }
+    .reticle::before {
+      left: 50%;
+      top: -10px;
+      bottom: -10px;
+      width: 2px;
+      transform: translateX(-50%);
+    }
+    .reticle::after {
+      top: 50%;
+      left: -10px;
+      right: -10px;
+      height: 2px;
+      transform: translateY(-50%);
+    }
+    .controlbar {
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      bottom: 14px;
+      padding: 10px;
+      pointer-events: auto;
+    }
+    .transport {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 10px;
+    }
+    .transport-main {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .time {
+      min-width: 112px;
+      color: #dbeafe;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: #60a5fa;
+    }
+    .hint {
+      color: #cbd5e1;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .chapter {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      margin-top: 9px;
+      padding-bottom: 1px;
+    }
+    .chapter button {
+      flex: 0 0 auto;
+      min-width: 128px;
+      padding: 8px 10px;
+      font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+      opacity: 0.76;
+    }
+    .chapter button.active {
+      border-color: #93c5fd;
+      background: rgba(37, 99, 235, 0.86);
+      opacity: 1;
+    }
+    .chapter strong {
+      display: block;
+      font-size: 12px;
+      margin-bottom: 2px;
+    }
+    .fallback {
+      color: #f8fafc;
+      padding: 20px;
+    }
+    .fallback video {
+      width: 100%;
+      max-height: 560px;
+      margin-top: 12px;
+      background: #000;
+    }
+  </style>
+</head>
+<body>
+  <div class="stage" id="stage">
+    <canvas id="viewer"></canvas>
+    <div class="topbar">
+      <div class="badge">
+        <strong id="title"></strong>
+        <span id="status">等待视频载入</span>
+        <span class="mode" id="modeText">拖拽改变视角 · 滚轮缩放</span>
+      </div>
+      <div class="button-row">
+        <button id="guide" title="自动贴合推荐视角">◎</button>
+        <button id="summary" title="只巡航摘要片段">Σ</button>
+        <button id="stereo" title="双目 VR 预览">VR</button>
+        <button id="fullscreen" title="全屏">⛶</button>
+      </div>
+    </div>
+    <div class="reticle"></div>
+    <div class="controlbar">
+      <div class="transport">
+        <div class="transport-main">
+          <button id="play" title="播放 / 暂停">▶</button>
+          <button id="reset" title="回到当前推荐视角">⌖</button>
+        </div>
+        <input id="timeline" type="range" min="0" max="1000" value="0" />
+        <div class="time" id="time">0:00 / 0:00</div>
+      </div>
+      <div class="chapter" id="chapters"></div>
+    </div>
+  </div>
+<script>
+const chapters = __CHAPTERS__;
+const videoTitle = __VIDEO_TITLE__;
+const videoSrc = __VIDEO_SRC__;
+const canvas = document.getElementById('viewer');
+const stage = document.getElementById('stage');
+const titleEl = document.getElementById('title');
+const statusEl = document.getElementById('status');
+const timeEl = document.getElementById('time');
+const timeline = document.getElementById('timeline');
+const chapterStrip = document.getElementById('chapters');
+const gl = canvas.getContext('webgl', { antialias: true });
+const video = document.createElement('video');
+video.src = videoSrc;
+video.preload = 'metadata';
+video.playsInline = true;
+video.setAttribute('playsinline', '');
+video.setAttribute('webkit-playsinline', '');
+video.controls = false;
+
+let yaw = 0;
+let pitch = 0;
+let targetYaw = 0;
+let targetPitch = 0;
+let fov = 1.08;
+let dragging = false;
+let lastX = 0;
+let lastY = 0;
+let autoGuide = true;
+let summaryMode = false;
+let stereo = false;
+let activeChapter = -1;
+let currentTourIndex = 0;
+let program = null;
+let texture = null;
+let textureReady = false;
+
+titleEl.textContent = videoTitle;
+
+if (!gl) {
+  stage.innerHTML = '<div class="fallback">当前浏览器不支持 WebGL，全景播放退回普通视频。<video controls src="' + videoSrc + '"></video></div>';
+} else {
+  initGl();
+  buildChapters();
+  bindEvents();
+  requestAnimationFrame(render);
+}
+
+function shader(type, source) {
+  const item = gl.createShader(type);
+  gl.shaderSource(item, source);
+  gl.compileShader(item);
+  if (!gl.getShaderParameter(item, gl.COMPILE_STATUS)) {
+    throw new Error(gl.getShaderInfoLog(item));
+  }
+  return item;
+}
+
+function initGl() {
+  const vertex = shader(gl.VERTEX_SHADER, `
+    attribute vec2 position;
+    varying vec2 uv;
+    void main() {
+      uv = position * 0.5 + 0.5;
+      gl_Position = vec4(position, 0.0, 1.0);
+    }
+  `);
+  const fragment = shader(gl.FRAGMENT_SHADER, `
+    precision highp float;
+    varying vec2 uv;
+    uniform sampler2D pano;
+    uniform float yaw;
+    uniform float pitch;
+    uniform float aspect;
+    uniform float fov;
+    uniform float stereoOffset;
+    const float PI = 3.141592653589793;
+    mat3 rotY(float a) {
+      float s = sin(a), c = cos(a);
+      return mat3(c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c);
+    }
+    mat3 rotX(float a) {
+      float s = sin(a), c = cos(a);
+      return mat3(1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c);
+    }
+    void main() {
+      vec2 p = uv * 2.0 - 1.0;
+      p.x *= aspect;
+      vec3 dir = normalize(vec3(p * tan(fov * 0.5), -1.0));
+      dir = rotY(yaw + stereoOffset) * rotX(pitch) * dir;
+      float lon = atan(dir.x, -dir.z);
+      float lat = asin(clamp(dir.y, -1.0, 1.0));
+      vec2 sampleUv = vec2(0.5 + lon / (2.0 * PI), 0.5 - lat / PI);
+      vec3 color = texture2D(pano, sampleUv).rgb;
+      gl_FragColor = vec4(color, 1.0);
+    }
+  `);
+  program = gl.createProgram();
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  gl.useProgram(program);
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+  const position = gl.getAttribLocation(program, 'position');
+  gl.enableVertexAttribArray(position);
+  gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+  program.uniforms = {
+    yaw: gl.getUniformLocation(program, 'yaw'),
+    pitch: gl.getUniformLocation(program, 'pitch'),
+    aspect: gl.getUniformLocation(program, 'aspect'),
+    fov: gl.getUniformLocation(program, 'fov'),
+    stereoOffset: gl.getUniformLocation(program, 'stereoOffset'),
+  };
+  texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+}
+
+function buildChapters() {
+  if (!chapters.length) {
+    chapterStrip.innerHTML = '<span class="hint">暂无摘要章节</span>';
+    return;
+  }
+  chapters.forEach((chapter, idx) => {
+    const button = document.createElement('button');
+    button.innerHTML = '<strong>' + chapter.label + '</strong>' + chapter.time + ' · score ' + chapter.score.toFixed(2);
+    button.onclick = () => seekChapter(idx, true);
+    chapterStrip.appendChild(button);
+  });
+}
+
+function bindEvents() {
+  video.addEventListener('loadedmetadata', () => {
+    statusEl.textContent = video.videoWidth + '×' + video.videoHeight + ' · ' + formatTime(video.duration);
+    updateTime();
+  });
+  video.addEventListener('loadeddata', updateTexture);
+  video.addEventListener('play', () => document.getElementById('play').textContent = 'Ⅱ');
+  video.addEventListener('pause', () => document.getElementById('play').textContent = '▶');
+  video.addEventListener('timeupdate', updateTime);
+  video.addEventListener('error', () => {
+    statusEl.textContent = '视频解码失败，请优先使用 H.264/AAC 编码的 MP4';
+  });
+  canvas.addEventListener('pointerdown', (event) => {
+    dragging = true;
+    canvas.classList.add('dragging');
+    lastX = event.clientX;
+    lastY = event.clientY;
+    canvas.setPointerCapture(event.pointerId);
+  });
+  canvas.addEventListener('pointermove', (event) => {
+    if (!dragging) return;
+    const dx = event.clientX - lastX;
+    const dy = event.clientY - lastY;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    targetYaw -= dx * 0.006;
+    targetPitch = clamp(targetPitch - dy * 0.006, -1.42, 1.42);
+  });
+  canvas.addEventListener('pointerup', () => {
+    dragging = false;
+    canvas.classList.remove('dragging');
+  });
+  canvas.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    fov = clamp(fov + event.deltaY * 0.0012, 0.62, 1.45);
+  }, { passive: false });
+  document.getElementById('play').onclick = togglePlay;
+  document.getElementById('reset').onclick = guideToActive;
+  document.getElementById('guide').onclick = () => {
+    autoGuide = !autoGuide;
+    document.getElementById('guide').classList.toggle('active', autoGuide);
+  };
+  document.getElementById('summary').onclick = () => {
+    summaryMode = !summaryMode;
+    document.getElementById('summary').classList.toggle('active', summaryMode);
+    if (summaryMode && chapters.length) seekChapter(currentTourIndex, true);
+  };
+  document.getElementById('stereo').onclick = () => {
+    stereo = !stereo;
+    document.getElementById('stereo').classList.toggle('active', stereo);
+  };
+  document.getElementById('fullscreen').onclick = () => stage.requestFullscreen?.();
+  timeline.addEventListener('input', () => {
+    if (Number.isFinite(video.duration) && video.duration > 0) {
+      video.currentTime = Number(timeline.value) / 1000 * video.duration;
+      updateTime();
+    }
+  });
+  document.getElementById('guide').classList.add('active');
+}
+
+function togglePlay() {
+  if (video.paused) {
+    video.play().catch(() => {
+      statusEl.textContent = '点击播放器后浏览器才允许播放';
+    });
+  } else {
+    video.pause();
+  }
+}
+
+function seekChapter(idx, shouldPlay) {
+  if (!chapters.length) return;
+  currentTourIndex = clampIndex(idx);
+  const chapter = chapters[currentTourIndex];
+  video.currentTime = Math.max(0, chapter.start + 0.01);
+  targetYaw = chapter.yaw;
+  targetPitch = clamp(chapter.pitch, -1.42, 1.42);
+  updateActiveChapter(currentTourIndex);
+  if (shouldPlay) {
+    video.play().catch(() => {});
+  }
+}
+
+function guideToActive() {
+  const chapter = activeChapter >= 0 ? chapters[activeChapter] : nearestChapter(video.currentTime);
+  if (!chapter) return;
+  targetYaw = chapter.yaw;
+  targetPitch = clamp(chapter.pitch, -1.42, 1.42);
+}
+
+function updateTime() {
+  const duration = Number.isFinite(video.duration) ? video.duration : 0;
+  const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+  timeline.value = duration > 0 ? Math.round(current / duration * 1000) : 0;
+  timeEl.textContent = formatTime(current) + ' / ' + formatTime(duration);
+  const idx = chapterIndexAt(current);
+  updateActiveChapter(idx);
+  if (summaryMode && chapters.length && !video.paused) {
+    const active = chapters[currentTourIndex];
+    if (!active || current > active.end || current < active.start - 0.25) {
+      seekChapter(currentTourIndex + 1, true);
+    }
+  }
+}
+
+function updateActiveChapter(idx) {
+  activeChapter = idx;
+  [...chapterStrip.children].forEach((button, buttonIdx) => {
+    button.classList?.toggle('active', buttonIdx === idx);
+  });
+  if (idx >= 0) {
+    currentTourIndex = idx;
+    statusEl.textContent = chapters[idx].label + ' · ' + chapters[idx].time;
+  }
+}
+
+function chapterIndexAt(time) {
+  return chapters.findIndex((chapter) => time >= chapter.start && time <= chapter.end);
+}
+
+function nearestChapter(time) {
+  if (!chapters.length) return null;
+  let best = chapters[0];
+  let bestDist = Infinity;
+  chapters.forEach((chapter) => {
+    const center = (chapter.start + chapter.end) * 0.5;
+    const dist = Math.abs(time - center);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = chapter;
+    }
+  });
+  return best;
+}
+
+function applyGuide() {
+  if (!autoGuide || dragging) return;
+  const idx = chapterIndexAt(video.currentTime);
+  if (idx < 0) return;
+  targetYaw = chapters[idx].yaw;
+  targetPitch = clamp(chapters[idx].pitch, -1.42, 1.42);
+}
+
+function updateTexture() {
+  if (video.readyState < 2) return;
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  try {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+    textureReady = true;
+  } catch (error) {
+    statusEl.textContent = '浏览器暂时不能把该视频作为全景纹理';
+  }
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+  const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+}
+
+function renderEye(x, y, width, height, offset) {
+  gl.viewport(x, y, width, height);
+  gl.uniform1f(program.uniforms.yaw, yaw);
+  gl.uniform1f(program.uniforms.pitch, pitch);
+  gl.uniform1f(program.uniforms.aspect, width / Math.max(height, 1));
+  gl.uniform1f(program.uniforms.fov, fov);
+  gl.uniform1f(program.uniforms.stereoOffset, offset);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+function render() {
+  resize();
+  applyGuide();
+  yaw += angleDelta(targetYaw, yaw) * 0.1;
+  pitch += (targetPitch - pitch) * 0.1;
+  if (!video.paused || !textureReady) updateTexture();
+  gl.clearColor(0.02, 0.03, 0.05, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (textureReady) {
+    if (stereo) {
+      const half = Math.floor(canvas.width / 2);
+      renderEye(0, 0, half, canvas.height, -0.025);
+      renderEye(half, 0, canvas.width - half, canvas.height, 0.025);
+    } else {
+      renderEye(0, 0, canvas.width, canvas.height, 0);
+    }
+  }
+  requestAnimationFrame(render);
+}
+
+function formatTime(value) {
+  value = Math.max(0, Number.isFinite(value) ? value : 0);
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.floor(value % 60).toString().padStart(2, '0');
+  return minutes + ':' + seconds;
+}
+
+function angleDelta(a, b) {
+  return Math.atan2(Math.sin(a - b), Math.cos(a - b));
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function clampIndex(idx) {
+  return ((idx % chapters.length) + chapters.length) % chapters.length;
+}
+</script>
+</body>
+</html>
+"""
+    return (
+        template.replace("__CHAPTERS__", json.dumps(chapters, ensure_ascii=False))
+        .replace("__VIDEO_TITLE__", json.dumps(video_name, ensure_ascii=False))
+        .replace("__VIDEO_SRC__", json.dumps(video_src))
+    )
+
+
 st.sidebar.header("上传视频")
 uploaded_video = st.sidebar.file_uploader(
     "真实 360°视频（MP4 / MOV）",
@@ -667,10 +1290,12 @@ if uploaded_video is None:
     st.info("请在左侧上传 MP4 / MOV / M4V 格式的 360°视频。上传后页面会展示原始视频、摘要视频和 360°/VR 导览。")
     st.stop()
 
+uploaded_content = uploaded_video.getvalue()
+
 with st.spinner("正在抽取真实 360°视频帧并生成轻量特征..."):
     video = convert_uploaded_video(
         uploaded_video.name,
-        uploaded_video.getvalue(),
+        uploaded_content,
         video_max_frames,
         video_sample_step,
     )
@@ -691,7 +1316,7 @@ st.markdown(
     <span class="flow-chip">Step 1: Saliency Maps</span>
     <span class="flow-chip">Step 2: 2D Event Video</span>
     <span class="flow-chip">Step 3: S3-360-Guide Summary</span>
-    <span class="flow-chip">Extension: Interactive VR Preview</span>
+    <span class="flow-chip">Extension: YouTube-style 360 Player</span>
     """,
     unsafe_allow_html=True,
 )
@@ -701,7 +1326,7 @@ st.caption(
 )
 st.info(
     "当前默认使用远程最新版的 S3-360-Guide：在 S3-360 基础上加入事件覆盖增益和视角稳定性约束；"
-    "页面同时保留三阶段流程、2D event video 导出、最终短 2D 视频导出和 360°/VR 预览。"
+    "页面同时保留三阶段流程、原视频 360°播放器、2D event video 导出和最终短 2D 视频导出。"
     "如果长视频摘要覆盖太少，可以提高左侧“最多采样帧数”。"
 )
 
@@ -712,6 +1337,29 @@ metric_cols[1].metric("Precision", f"{metric_row['precision']:.3f}")
 metric_cols[2].metric("Recall", f"{metric_row['recall']:.3f}")
 metric_cols[3].metric("重复率", f"{metric_row['repeat_rate']:.3f}")
 metric_cols[4].metric("事件覆盖率", f"{metric_row['event_coverage']:.3f}")
+
+st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+st.subheader("YouTube-style 360° 原视频播放器")
+st.markdown(
+    """
+    <div class="step-band">
+      <strong>新增体验：</strong>直接播放上传的原始 360°视频，可拖拽视角、滚轮缩放、全屏观看；
+      摘要算法选中的片段会显示为章节，开启“Σ”后可只巡航最终摘要片段，开启“◎”后会自动贴合推荐视角。
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+if len(uploaded_content) > 120 * 1024 * 1024:
+    st.warning("当前视频较大，全景播放器首次载入可能比较慢；若答辩现场卡顿，建议准备一份压缩到 1080p/1440p 的 MP4。")
+video_chapters = guided_video_chapters(segments, result)
+st.iframe(
+    immersive_video_player_html(
+        uploaded_video.name,
+        uploaded_video_data_url(uploaded_video.name, uploaded_content),
+        video_chapters,
+    ),
+    height=660,
+)
 
 safe_video_name = video.name.lower().replace(" ", "_").replace("/", "_")
 safe_method_name = method_slug(method_name)
@@ -747,15 +1395,15 @@ st.markdown(
 raw_col, heat_col, guide_col = st.columns(3)
 with raw_col:
     st.markdown('<div class="panel-label">输入帧：ERP 全景图</div>', unsafe_allow_html=True)
-    st.image(raw_frame(frame), use_container_width=True)
+    st.image(raw_frame(frame), width="stretch")
 with heat_col:
     st.markdown('<div class="panel-label">中间输出：saliency heatmap</div>', unsafe_allow_html=True)
-    st.image(heatmap_image(video.saliency[frame_idx]), use_container_width=True)
+    st.image(heatmap_image(video.saliency[frame_idx]), width="stretch")
 with guide_col:
     st.markdown('<div class="panel-label">视角建议：重要区域框</div>', unsafe_allow_html=True)
     st.image(
         guided_frame(frame, video.saliency[frame_idx], segments.viewport_xy[segment_idx]),
-        use_container_width=True,
+        width="stretch",
     )
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
@@ -772,7 +1420,7 @@ st.markdown(
 event_cols = st.columns([1, 1.15])
 with event_cols[0]:
     st.markdown('<div class="story-label">当前帧自动裁剪视角</div>', unsafe_allow_html=True)
-    st.image(viewport_crop(frame, segments.viewport_xy[segment_idx]), use_container_width=True)
+    st.image(viewport_crop(frame, segments.viewport_xy[segment_idx]), width="stretch")
 with event_cols[1]:
     st.markdown('<div class="story-label">检测到的 event 片段</div>', unsafe_allow_html=True)
     st.dataframe(
@@ -780,11 +1428,11 @@ with event_cols[1]:
             segments,
             SimpleNamespace(method="2D Event Video", selected=event_segments, score=segments.saliency_score),
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
-if st.button("生成 Step 2 的 2D Event Video（MP4）", use_container_width=True):
+if st.button("生成 Step 2 的 2D Event Video（MP4）", width="stretch"):
     event_out = write_event_video(
         video.frames,
         segments,
@@ -796,18 +1444,19 @@ if st.button("生成 Step 2 的 2D Event Video（MP4）", use_container_width=Tr
     download_video_button(event_out, "下载 2D Event Video")
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("Extension. 360°/VR 交互预览")
+st.subheader("Extension. 摘要关键帧 360°/VR 巡航")
 st.markdown(
     """
     <div class="step-band">
-      <strong>我们的增强：</strong>在最终摘要之外，保留一个可拖拽的全景浏览器，用来展示推荐视角是否合理。
+      <strong>补充验证：</strong>将摘要片段的代表帧做成可拖拽全景巡航，用来快速检查推荐视角是否合理。
+      上方原视频播放器负责连续播放，这里负责摘要结果的快速浏览。
     </div>
     """,
     unsafe_allow_html=True,
 )
 tour = vr_tour_frames(video, segments, result)
 if tour:
-    components.html(panorama_viewer_html(tour), height=580)
+    st.iframe(panorama_viewer_html(tour), height=580)
 else:
     st.info("当前数据没有 frames 字段，无法打开全景浏览模式。")
 
@@ -825,10 +1474,10 @@ st.markdown(
 overview_cols = st.columns(2)
 with overview_cols[0]:
     st.markdown('<div class="story-label">原始 360°视频预览</div>', unsafe_allow_html=True)
-    st.image(str(original_gif), use_container_width=True)
+    st.image(str(original_gif), width="stretch")
 with overview_cols[1]:
     st.markdown('<div class="story-label">S3-360-Guide 摘要预览</div>', unsafe_allow_html=True)
-    st.image(str(summary_gif), use_container_width=True)
+    st.image(str(summary_gif), width="stretch")
 
 previews = segment_previews(video, segments, result)
 if previews:
@@ -838,14 +1487,14 @@ if previews:
             st.image(
                 image,
                 caption=f"片段 {selected_segment} | {segment_time_label(segments, selected_segment)}",
-                use_container_width=True,
+                width="stretch",
             )
 else:
     st.info("当前数据没有 frames 字段，无法显示缩略图。")
 
 final_cols = st.columns(2)
 with final_cols[0]:
-    if st.button("生成最终短 2D Summary Video（MP4）", use_container_width=True):
+    if st.button("生成最终短 2D Summary Video（MP4）", width="stretch"):
         summary_mp4_out = write_summary_video(
             video.frames,
             segments,
@@ -858,19 +1507,20 @@ with final_cols[0]:
 with final_cols[1]:
     download_video_button(summary_gif, "下载 Storyboard GIF")
 
-st.plotly_chart(timeline_figure(segments, result), use_container_width=True)
+st.plotly_chart(timeline_figure(segments, result), width="stretch")
 
 with st.expander("查看选中片段明细"):
-    st.dataframe(selection_table(segments, result), use_container_width=True, hide_index=True)
+    st.dataframe(selection_table(segments, result), width="stretch", hide_index=True)
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
 st.subheader("方法对比与系统说明")
-st.plotly_chart(metrics_figure(metrics), use_container_width=True)
-st.dataframe(metrics, use_container_width=True, hide_index=True)
+st.plotly_chart(metrics_figure(metrics), width="stretch")
+st.dataframe(metrics, width="stretch", hide_index=True)
 
 with st.expander("系统解释"):
     st.write(summary_explanation(segments, result, method_name))
     st.write(
         "摘要视频中的热力颜色表示系统估计的注意力区域，白色框表示推荐观看视角。"
-        "360°/VR 导览可以拖拽视角、自动导览、回到推荐视角、切换 VR 预览和全屏观看。"
+        "原视频 360°播放器可以像 YouTube 360 一样拖拽观看，并用摘要章节驱动自动导览；"
+        "关键帧 360°/VR 巡航则用于快速检查每个摘要片段的推荐视角。"
     )
