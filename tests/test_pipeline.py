@@ -3,6 +3,13 @@ from s3_360.data import save_npz
 from s3_360.evaluation import evaluate_all, guide_path_table
 from s3_360.methods import summarize_all
 from s3_360.segmentation import make_segments
+from s3_360.tourguide import (
+    build_tour_points,
+    tour_point_table,
+    tour_report_json,
+    tour_report_markdown,
+    tour_route_metrics,
+)
 from scripts.run_full_benchmark import BenchmarkConfig, run_benchmark
 
 
@@ -25,6 +32,39 @@ def test_demo_pipeline_runs() -> None:
     assert len(guide_path_table(segments, results["S3-360-Guide"])) == len(
         results["S3-360-Guide"].selected
     )
+
+
+def test_tourguide_report_outputs_route_points() -> None:
+    video = generate_demo_video(num_frames=80, seed=5)
+    segments = make_segments(video, segment_size=8)
+    result = summarize_all(segments, budget_ratio=0.25)["S3-360-Guide"]
+
+    points = build_tour_points(segments, result)
+    route_metrics = tour_route_metrics(segments, result)
+    table = tour_point_table(points)
+    markdown = tour_report_markdown(
+        video_name=video.name,
+        source=video.source or video.name,
+        sampled_duration_sec=8.0,
+        method_name="S3-360-TourGuide",
+        points=points,
+        route_metrics=route_metrics,
+        map_reference_url="https://www.openstreetmap.org",
+    )
+    payload = tour_report_json(
+        video_name=video.name,
+        source=video.source or video.name,
+        sampled_duration_sec=8.0,
+        method_name="S3-360-TourGuide",
+        points=points,
+        route_metrics=route_metrics,
+    )
+
+    assert len(points) == len(result.selected)
+    assert not table.empty
+    assert 0 <= route_metrics["tour_route_score"] <= 100
+    assert "S3-360-TourGuide 导览报告" in markdown
+    assert '"tour_points"' in payload
 
 
 def test_strict_evaluation_uses_real_user_summaries() -> None:

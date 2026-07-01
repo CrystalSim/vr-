@@ -21,6 +21,7 @@
 - YouTube-style 360°原视频播放器：直接播放上传的 360°视频，支持拖拽视角、滚轮缩放、摘要章节巡航、推荐视角自动贴合和全屏
 - 浏览器内 VR 导览实验：记录用户观看轨迹，导出 `viewing_trace.csv`，实时显示推荐视角误差和舒适度估计
 - VR 舒适度评价面板：统计推荐导览路径的平均转向角、最大转向角、平均转向速度和舒适度分数
+- S³-360-TourGuide 场景层：将摘要片段组织成“导览点”，生成导览路线地图、综合导览分和可下载 `tourguide` 报告
 - 摘要关键帧 360°/VR 巡航：把摘要片段渲染成可拖拽的全景视角，用于快速验证推荐视角是否合理
 - Step 2 2D event video 导出、Step 3 最终短 2D summary video 导出、GIF 摘要动图导出
 
@@ -169,6 +170,7 @@ streamlit run app.py
 网页中按论文流程组织：
 
 - YouTube-style 360°原视频播放器：直接播放上传原视频，并把摘要片段显示成可点击章节。
+- Scenario S3-360-TourGuide：把摘要片段命名为导览点，展示 ERP 路线地图、路线评分、外部地图参考和导览报告下载。
 - Paper Alignment 相机运动与事件子体诊断：展示静态/运动相机判别、推荐 saliency 路径和 event sub-volume 明细。
 - Extension Viewing Trace & Comfort：在浏览器里记录观看方向，导出轨迹 CSV，并评价推荐导览路径的舒适度。
 - Step 1 Saliency Maps：展示原始全景帧、热力图和重要视角框。

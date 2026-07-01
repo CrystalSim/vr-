@@ -21,6 +21,13 @@ from s3_360.evaluation import evaluate_all, guide_path_table, selection_table
 from s3_360.events import build_event_subvolumes, covered_segment_ratio
 from s3_360.methods import summarize_all
 from s3_360.segmentation import make_segments
+from s3_360.tourguide import (
+    build_tour_points,
+    tour_point_table,
+    tour_report_json,
+    tour_report_markdown,
+    tour_route_metrics,
+)
 from s3_360.video import write_event_video, write_storyboard_video, write_summary_video
 from s3_360.visualization import (
     guide_path_figure,
@@ -121,6 +128,17 @@ st.markdown(
         border-radius: 8px;
         padding: 0.75rem 0.9rem;
         color: #14532d;
+    }
+    .tour-summary {
+        border: 1px solid #bfdbfe;
+        border-radius: 8px;
+        background: #eff6ff;
+        padding: 0.85rem 0.95rem;
+        color: #1e3a8a;
+        line-height: 1.55;
+    }
+    .tour-summary strong {
+        color: #172554;
     }
     </style>
     """,
@@ -253,6 +271,76 @@ def guide_overview_image(video, segments, result, max_items: int = 8) -> Image.I
 
     draw.rounded_rectangle((14, 14, 310, 52), radius=8, fill=(15, 23, 42, 218))
     draw.text((26, 25), "Recommended VR Guide Path", fill=(248, 250, 252, 255))
+    return image
+
+
+def tour_route_map_image(video, points, max_items: int = 12) -> Image.Image:
+    selected = points[:max_items]
+    if video.frames is None or not selected:
+        base = fallback_frame(video)
+    else:
+        base = video.frames[0]
+    image = Image.fromarray(base.astype(np.uint8)).convert("RGB")
+    image.thumbnail((1280, 640), Image.Resampling.BICUBIC)
+    draw = ImageDraw.Draw(image, "RGBA")
+    width, height = image.size
+    draw.rectangle((0, 0, width, height), fill=(2, 6, 23, 78))
+
+    for col in range(1, 4):
+        x = int(width * col / 4)
+        draw.line((x, 0, x, height), fill=(226, 232, 240, 62), width=1)
+    for row in range(1, 3):
+        y = int(height * row / 3)
+        draw.line((0, y, width, y), fill=(226, 232, 240, 62), width=1)
+
+    route_points = [
+        (
+            int(np.clip((point.yaw_deg + 180.0) / 360.0, 0, 1) * (width - 1)),
+            int(np.clip(0.5 - point.pitch_deg / 180.0, 0, 1) * (height - 1)),
+        )
+        for point in selected
+    ]
+    for previous, current, point in zip(route_points[:-1], route_points[1:], selected[1:], strict=True):
+        color = {
+            "平滑": (34, 197, 94, 235),
+            "可接受": (245, 158, 11, 235),
+            "需提示": (239, 68, 68, 235),
+        }.get(point.comfort_state, (96, 165, 250, 235))
+        _draw_arrow(draw, previous, current, fill=color, width=5)
+
+    for point, xy in zip(selected, route_points, strict=True):
+        x, y = xy
+        radius = 16
+        fill = {
+            "平滑": (34, 197, 94, 238),
+            "可接受": (245, 158, 11, 238),
+            "需提示": (239, 68, 68, 238),
+        }.get(point.comfort_state, (59, 130, 246, 238))
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill)
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), outline=(255, 255, 255, 245), width=3)
+        label = str(point.order)
+        label_box = draw.textbbox((0, 0), label)
+        draw.text(
+            (x - (label_box[2] - label_box[0]) / 2, y - (label_box[3] - label_box[1]) / 2 - 1),
+            label,
+            fill=(255, 255, 255, 255),
+        )
+        tag_w = 150
+        tag_h = 40
+        tag_x = min(max(x + 18, 8), max(width - tag_w - 8, 8))
+        tag_y = min(max(y - 34, 8), max(height - tag_h - 8, 8))
+        draw.rounded_rectangle(
+            (tag_x, tag_y, tag_x + tag_w, tag_y + tag_h),
+            radius=7,
+            fill=(15, 23, 42, 220),
+            outline=(148, 163, 184, 160),
+        )
+        draw.text((tag_x + 8, tag_y + 7), f"{point.label} · {format_seconds(point.start_sec)}", fill=(248, 250, 252, 255))
+        draw.text((tag_x + 8, tag_y + 23), f"turn {point.jump_deg:.0f}° · {point.comfort_state}", fill=(191, 219, 254, 255))
+
+    draw.rounded_rectangle((14, 14, 362, 58), radius=8, fill=(15, 23, 42, 224))
+    draw.text((26, 24), "S3-360-TourGuide Route Map", fill=(248, 250, 252, 255))
+    draw.text((26, 40), "ERP panorama coordinates: yaw / pitch / turn angle", fill=(191, 219, 254, 255))
     return image
 
 
@@ -1686,6 +1774,16 @@ uploaded_video = st.sidebar.file_uploader(
     key="video_upload",
 )
 
+st.sidebar.header("导览场景")
+tour_scenario = st.sidebar.selectbox(
+    "场景类型",
+    ["校园/景区/展厅导览", "校园开放日", "博物馆/展馆参观", "景区步道/街区漫游", "实验室/空间参观"],
+)
+map_reference_url = st.sidebar.text_input(
+    "地图参考链接（可选）",
+    placeholder="例如 OpenStreetMap / 校园地图 / 展馆平面图链接",
+)
+
 st.sidebar.header("摘要设置")
 method_name = "S3-360-Guide"
 st.sidebar.caption("摘要方法：S3-360-Guide")
@@ -1721,6 +1819,8 @@ metrics = evaluate_all(segments, results)
 camera_motion = analyze_camera_motion(video.frames)
 event_volumes = build_event_subvolumes(segments)
 event_coverage = covered_segment_ratio(event_volumes, segments)
+tour_points = build_tour_points(segments, result)
+route_metrics = tour_route_metrics(segments, result)
 
 source_text = video.source or video.name
 note_text = f"。{video.note}" if video.note else ""
@@ -1733,6 +1833,7 @@ st.markdown(
     <span class="flow-chip">Step 1: Saliency Maps</span>
     <span class="flow-chip">Step 2: 2D Event Video</span>
     <span class="flow-chip">Step 3: S3-360-Guide Summary</span>
+    <span class="flow-chip">Scenario: S3-360-TourGuide</span>
     <span class="flow-chip">Extension: YouTube-style 360 Player</span>
     <span class="flow-chip">Extension: Viewing Trace & Comfort</span>
     """,
@@ -1744,7 +1845,8 @@ st.caption(
 )
 st.info(
     "当前默认使用远程最新版的 S3-360-Guide：在 S3-360 基础上加入事件覆盖增益和视角稳定性约束；"
-    "页面同时保留三阶段流程、原视频 360°播放器、观看轨迹记录、舒适度评估、2D event video 导出和最终短 2D 视频导出。"
+    "页面同时新增 S3-360-TourGuide 场景层，把摘要片段组织成导览点、导览地图和可下载报告；"
+    "并保留三阶段流程、原视频 360°播放器、观看轨迹记录、舒适度评估、2D event video 导出和最终短 2D 视频导出。"
     "如果长视频摘要覆盖太少，可以提高左侧“最多采样帧数”。"
 )
 
@@ -1755,6 +1857,88 @@ metric_cols[1].metric("Precision", f"{metric_row['precision']:.3f}")
 metric_cols[2].metric("Recall", f"{metric_row['recall']:.3f}")
 metric_cols[3].metric("重复率", f"{metric_row['repeat_rate']:.3f}")
 metric_cols[4].metric("事件覆盖率", f"{metric_row['event_coverage']:.3f}")
+
+st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+st.subheader("Scenario. S3-360-TourGuide 场景化导览路线")
+st.markdown(
+    f"""
+    <div class="step-band">
+      <strong>面向场景：</strong>{tour_scenario}。系统把普通“摘要片段”进一步解释为
+      <strong>导览点</strong>，并生成推荐观看方向、路线地图、转向舒适度和可下载导览报告。
+      这层用于回答“看哪一段”之外的两个问题：<strong>在 360°画面里看哪里</strong>、
+      <strong>这条导览路线是否适合连续观看</strong>。
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+tour_metric_cols = st.columns(5)
+tour_metric_cols[0].metric("综合导览分", f"{route_metrics['tour_route_score']:.1f}/100")
+tour_metric_cols[1].metric("导览点", str(len(tour_points)))
+tour_metric_cols[2].metric("覆盖得分", f"{route_metrics['tour_coverage_score']:.3f}")
+tour_metric_cols[3].metric("平滑得分", f"{route_metrics['tour_smoothness_score']:.3f}")
+tour_metric_cols[4].metric("多样性", f"{route_metrics['tour_diversity_score']:.3f}")
+
+tour_cols = st.columns([1.25, 0.75])
+with tour_cols[0]:
+    st.image(
+        tour_route_map_image(video, tour_points),
+        caption="导览地图：编号点是导览点，箭头表示推荐观看顺序；绿色/黄色/红色表示转向是否平滑。",
+        width="stretch",
+    )
+with tour_cols[1]:
+    st.markdown(
+        f"""
+        <div class="tour-summary">
+          <strong>导览解释</strong><br>
+          当前路线从 {len(tour_points)} 个导览点中组织摘要，
+          平均转向角为 {route_metrics['guide_avg_angle_deg']:.1f}°，
+          最大转向角为 {route_metrics['guide_max_angle_deg']:.1f}°。
+          导览报告会记录每个导览点的时间段、推荐 yaw/pitch、转向角和舒适状态。
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if map_reference_url:
+        st.link_button("打开外部地图参考", map_reference_url, width="stretch")
+    else:
+        st.caption("可以在左侧填入 OpenStreetMap、校园地图或展馆平面图链接，用于答辩时对照路线。")
+
+report_md = tour_report_markdown(
+    video_name=uploaded_video.name,
+    source=source_text,
+    sampled_duration_sec=sampled_duration(video),
+    method_name="S3-360-TourGuide",
+    points=tour_points,
+    route_metrics=route_metrics,
+    map_reference_url=map_reference_url,
+)
+report_json = tour_report_json(
+    video_name=uploaded_video.name,
+    source=source_text,
+    sampled_duration_sec=sampled_duration(video),
+    method_name="S3-360-TourGuide",
+    points=tour_points,
+    route_metrics=route_metrics,
+    map_reference_url=map_reference_url,
+)
+download_cols = st.columns(2)
+download_cols[0].download_button(
+    "下载 TourGuide 报告（Markdown）",
+    data=report_md,
+    file_name="s3_360_tourguide_report.md",
+    mime="text/markdown",
+    width="stretch",
+)
+download_cols[1].download_button(
+    "下载 TourGuide 数据（JSON）",
+    data=report_json,
+    file_name="s3_360_tourguide_data.json",
+    mime="application/json",
+    width="stretch",
+)
+with st.expander("查看导览点路线表"):
+    st.dataframe(tour_point_table(tour_points), width="stretch", hide_index=True)
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
 st.subheader("Paper Alignment. 相机运动与事件子体诊断")
@@ -1833,8 +2017,8 @@ else:
 lab_cols = st.columns([1.35, 0.85])
 with lab_cols[0]:
     st.image(
-        guide_overview_image(video, segments, result),
-        caption="推荐导览路线：编号点表示摘要片段，箭头表示系统建议的观看方向切换顺序。",
+        tour_route_map_image(video, tour_points),
+        caption="推荐导览路线：编号点表示导览点，箭头表示系统建议的观看方向切换顺序。",
         width="stretch",
     )
 with lab_cols[1]:
@@ -1883,6 +2067,8 @@ if story_items:
 
 with st.expander("技术细节：yaw / pitch 坐标路径与明细表"):
     st.plotly_chart(guide_path_figure(segments, result), width="stretch")
+    st.dataframe(tour_point_table(tour_points), width="stretch", hide_index=True)
+    st.caption("原始 segment/yaw/pitch 数值表：")
     st.dataframe(guide_path_table(segments, result), width="stretch", hide_index=True)
 
 safe_video_name = video.name.lower().replace(" ", "_").replace("/", "_")
