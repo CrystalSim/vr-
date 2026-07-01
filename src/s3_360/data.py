@@ -14,8 +14,10 @@ class VideoData:
     features: np.ndarray
     saliency: np.ndarray
     labels: np.ndarray | None = None
+    user_summaries: np.ndarray | None = None
     event_ids: np.ndarray | None = None
     frames: np.ndarray | None = None
+    frame_times: np.ndarray | None = None
     fps: float = 2.0
     source: str = "demo"
     note: str = ""
@@ -101,20 +103,41 @@ def save_npz(video: VideoData, path: str | Path) -> None:
     }
     if video.labels is not None:
         payload["labels"] = video.labels
+    if video.user_summaries is not None:
+        payload["user_summaries"] = video.user_summaries
     if video.event_ids is not None:
         payload["event_ids"] = video.event_ids
     if video.frames is not None:
         payload["frames"] = video.frames
+    if video.frame_times is not None:
+        payload["frame_times"] = video.frame_times
     np.savez_compressed(out, **payload)
 
 
 def load_video(path: str | Path) -> VideoData:
+    source_text = str(path)
+    if "::" in source_text:
+        file_path, group_key = source_text.split("::", 1)
+        return _load_hdf5(Path(file_path), group_key)
+
     source = Path(path)
     if source.suffix.lower() == ".npz":
         return _load_npz(source)
     if source.suffix.lower() in {".h5", ".hdf5"}:
         return _load_hdf5(source)
     raise ValueError(f"Unsupported data format: {source.suffix}")
+
+
+def hdf5_video_keys(path: str | Path) -> list[str]:
+    with h5py.File(path, "r") as handle:
+        if _first_dataset(handle, ("features", "feature", "frame_features", "pool5")) is not None:
+            return []
+        return [
+            key
+            for key, value in handle.items()
+            if isinstance(value, h5py.Group)
+            and _first_dataset(value, ("features", "feature", "frame_features", "pool5")) is not None
+        ]
 
 
 def _load_npz(path: Path) -> VideoData:
@@ -126,17 +149,27 @@ def _load_npz(path: Path) -> VideoData:
         return VideoData(
             name=name,
             features=np.asarray(data["features"], dtype=np.float32),
-            saliency=np.asarray(data["saliency"], dtype=np.float32),
-            labels=np.asarray(data["labels"], dtype=np.int32) if "labels" in data else None,
+            saliency=_coerce_saliency(np.asarray(data["saliency"], dtype=np.float32)),
+            labels=np.asarray(data["labels"], dtype=np.float32) if "labels" in data else None,
+            user_summaries=(
+                np.asarray(data["user_summaries"], dtype=np.float32)
+                if "user_summaries" in data
+                else None
+            ),
             event_ids=np.asarray(data["event_ids"], dtype=np.int32) if "event_ids" in data else None,
             frames=np.asarray(data["frames"], dtype=np.uint8) if "frames" in data else None,
+            frame_times=(
+                np.asarray(data["frame_times"], dtype=np.float32)
+                if "frame_times" in data
+                else None
+            ),
             fps=fps,
             source=source,
             note=note,
         )
 
 
-def _first_dataset(handle: h5py.File, names: tuple[str, ...]) -> np.ndarray | None:
+def _first_dataset(handle: h5py.File | h5py.Group, names: tuple[str, ...]) -> np.ndarray | None:
     lower_map = {key.lower(): key for key in handle.keys()}
     for name in names:
         key = lower_map.get(name.lower())
@@ -145,29 +178,125 @@ def _first_dataset(handle: h5py.File, names: tuple[str, ...]) -> np.ndarray | No
     return None
 
 
-def _load_hdf5(path: Path) -> VideoData:
+def _load_hdf5(path: Path, group_key: str | None = None) -> VideoData:
     with h5py.File(path, "r") as handle:
-        features = _first_dataset(handle, ("features", "feature", "frame_features", "pool5"))
-        saliency = _first_dataset(handle, ("saliency", "saliency_maps", "saliency_score", "scores"))
-        labels = _first_dataset(handle, ("labels", "label", "gtscore", "user_summary", "summary"))
-        event_ids = _first_dataset(handle, ("event_ids", "events", "event"))
-        frames = _first_dataset(handle, ("frames", "images", "erp_frames"))
-        fps_data = _first_dataset(handle, ("fps",))
+        group = handle[group_key] if group_key is not None else _default_hdf5_group(handle)
+        features = _first_dataset(group, ("features", "feature", "frame_features", "pool5"))
+        saliency = _first_dataset(
+            group,
+            ("saliency", "saliency_maps", "saliency_score", "saliency_scores", "scores"),
+        )
+        labels = _first_dataset(group, ("labels", "label", "gtscore", "summary"))
+        user_summaries = _first_dataset(group, ("user_summaries", "user_summary", "user_summaries_gt"))
+        event_ids = _first_dataset(group, ("event_ids", "events", "event"))
+        change_points = _first_dataset(group, ("change_points", "change_point", "cps"))
+        picks = _first_dataset(group, ("picks", "sampled_frames"))
+        frames = _first_dataset(group, ("frames", "images", "erp_frames"))
+        frame_times = _first_dataset(group, ("frame_times", "timestamps", "time", "times"))
+        fps_data = _first_dataset(group, ("fps",))
 
     if features is None:
         raise ValueError("HDF5 file must contain a features-like dataset.")
+    frame_count = int(features.shape[0])
+    picks = np.asarray(picks, dtype=np.int64).reshape(-1) if picks is not None else None
     if saliency is None:
-        saliency = np.zeros((features.shape[0], 16, 32), dtype=np.float32)
+        saliency = np.zeros((frame_count, 16, 32), dtype=np.float32)
+    saliency = _align_to_features(saliency, picks, frame_count)
+    if user_summaries is not None and user_summaries.ndim == 1:
+        user_summaries = user_summaries[None, :]
+    if user_summaries is not None and user_summaries.shape[0] == frame_count:
+        user_summaries = user_summaries.T
+    if user_summaries is not None:
+        user_summaries = _align_user_summaries(user_summaries, picks, frame_count)
     if labels is not None and labels.ndim > 1:
         labels = labels.mean(axis=0)
+    if labels is not None:
+        labels = _align_to_features(labels, picks, frame_count)
+    elif labels is None and user_summaries is not None:
+        labels = user_summaries.mean(axis=0)
+    if event_ids is None and change_points is not None:
+        event_ids = _event_ids_from_change_points(change_points, frame_count, picks)
+    elif event_ids is not None:
+        event_ids = _align_to_features(event_ids, picks, frame_count)
+    if frame_times is not None:
+        frame_times = _align_to_features(frame_times, picks, frame_count)
     fps = float(np.asarray(fps_data).reshape(-1)[0]) if fps_data is not None else 2.0
 
     return VideoData(
-        name=path.stem,
+        name=group_key or path.stem,
         features=np.asarray(features, dtype=np.float32),
-        saliency=np.asarray(saliency, dtype=np.float32),
-        labels=np.asarray(labels > np.mean(labels), dtype=np.int32) if labels is not None else None,
+        saliency=_coerce_saliency(np.asarray(saliency, dtype=np.float32)),
+        labels=np.asarray(labels, dtype=np.float32) if labels is not None else None,
+        user_summaries=(
+            np.asarray(user_summaries, dtype=np.float32) if user_summaries is not None else None
+        ),
         event_ids=np.asarray(event_ids, dtype=np.int32) if event_ids is not None else None,
         frames=np.asarray(frames, dtype=np.uint8) if frames is not None else None,
+        frame_times=np.asarray(frame_times, dtype=np.float32) if frame_times is not None else None,
         fps=fps,
     )
+
+
+def _default_hdf5_group(handle: h5py.File) -> h5py.File | h5py.Group:
+    if _first_dataset(handle, ("features", "feature", "frame_features", "pool5")) is not None:
+        return handle
+    keys = hdf5_video_keys(handle.filename)
+    if len(keys) == 1:
+        return handle[keys[0]]
+    if len(keys) > 1:
+        raise ValueError("HDF5 file contains multiple videos. Use 'path::video_key' or strict runner.")
+    return handle
+
+
+def _align_to_features(values: np.ndarray, picks: np.ndarray | None, frame_count: int) -> np.ndarray:
+    array = np.asarray(values)
+    if array.shape[0] == frame_count:
+        return array
+    if picks is not None and array.shape[0] > int(picks.max(initial=0)):
+        return array[picks]
+    raise ValueError(f"Cannot align data with shape {array.shape} to {frame_count} feature steps.")
+
+
+def _align_user_summaries(
+    user_summaries: np.ndarray,
+    picks: np.ndarray | None,
+    frame_count: int,
+) -> np.ndarray:
+    summaries = np.asarray(user_summaries)
+    if summaries.shape[1] == frame_count:
+        return summaries
+    if picks is not None and summaries.shape[1] > int(picks.max(initial=0)):
+        return summaries[:, picks]
+    raise ValueError(
+        f"Cannot align user summaries with shape {summaries.shape} to {frame_count} feature steps."
+    )
+
+
+def _coerce_saliency(saliency: np.ndarray) -> np.ndarray:
+    if saliency.ndim == 1:
+        return saliency[:, None, None].astype(np.float32)
+    if saliency.ndim == 2:
+        return saliency[:, None, :].astype(np.float32)
+    return saliency.astype(np.float32)
+
+
+def _event_ids_from_change_points(
+    change_points: np.ndarray,
+    frame_count: int,
+    picks: np.ndarray | None = None,
+) -> np.ndarray:
+    source_count = int(picks.max() + 1) if picks is not None and picks.size else frame_count
+    ids = np.zeros(frame_count, dtype=np.int32)
+    cps = np.asarray(change_points, dtype=np.int32)
+    if cps.ndim == 1:
+        cps = cps.reshape(-1, 2)
+    source_ids = np.zeros(source_count, dtype=np.int32)
+    for event_idx, row in enumerate(cps[:, :2], start=1):
+        start = max(int(row[0]), 0)
+        end = min(int(row[1]), source_count - 1)
+        source_ids[start : end + 1] = event_idx
+    if picks is not None:
+        ids = source_ids[picks]
+    else:
+        ids = source_ids
+    return ids

@@ -9,7 +9,7 @@ from s3_360.segmentation import SegmentTable
 
 
 def timeline_figure(segments: SegmentTable, result: SummaryResult) -> go.Figure:
-    x = segments.starts / segments.fps
+    x = segments.start_times
     selected_y = np.full(segments.num_segments, np.nan)
     selected_y[result.selected] = result.score[result.selected]
 
@@ -29,7 +29,7 @@ def timeline_figure(segments: SegmentTable, result: SummaryResult) -> go.Figure:
             y=selected_y,
             name="selected",
             marker={"color": "#f97316"},
-            width=float((segments.ends[0] - segments.starts[0]) / segments.fps) if segments.num_segments else 1,
+            width=float(segments.end_times[0] - segments.start_times[0]) if segments.num_segments else 1,
         )
     )
     fig.update_layout(

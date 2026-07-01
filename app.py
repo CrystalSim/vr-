@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import base64
 import json
+import sys
 from pathlib import Path
 from io import BytesIO
 from tempfile import NamedTemporaryFile
 from types import SimpleNamespace
+
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image, ImageDraw
 
-from s3_360.data import generate_demo_video, load_video, save_npz
 from s3_360.evaluation import evaluate_all, selection_table
 from s3_360.methods import summarize_all
 from s3_360.segmentation import make_segments
@@ -84,33 +88,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
-
-def cached_default_data() -> str:
-    real360_path = Path("data/real360_sample/real360_tennis.npz")
-    if real360_path.exists():
-        return str(real360_path)
-    shd360_path = Path("data/shd360_sample/shd360_tiny.npz")
-    if shd360_path.exists():
-        return str(shd360_path)
-    path = Path("data/demo/demo_video.npz")
-    if not path.exists():
-        save_npz(generate_demo_video(), path)
-    return str(path)
-
-
-def load_from_upload() -> str | None:
-    uploaded = st.sidebar.file_uploader(
-        "实验数据文件（NPZ / HDF5）",
-        type=["npz", "h5", "hdf5"],
-        key="data_upload",
-    )
-    if uploaded is None:
-        return None
-    suffix = Path(uploaded.name).suffix
-    with NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(uploaded.getbuffer())
-        return tmp.name
 
 
 @st.cache_data(show_spinner=False)
@@ -198,6 +175,72 @@ def download_video_button(path: Path, label: str) -> None:
     )
 
 
+def write_original_preview_video(
+    frames: np.ndarray,
+    out_path: str | Path,
+    fps: float = 8.0,
+    max_frames: int = 96,
+) -> Path:
+    out = Path(out_path)
+    if out.suffix.lower() != ".gif":
+        out = out.with_suffix(".gif")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if len(frames) > max_frames:
+        indices = np.linspace(0, len(frames) - 1, max_frames, dtype=int)
+        chosen = frames[indices]
+    else:
+        chosen = frames
+    rendered = [Image.fromarray(frame.astype(np.uint8)).convert("RGB") for frame in chosen]
+    duration_ms = max(int(1000 / fps), 1)
+    rendered[0].save(
+        out,
+        save_all=True,
+        append_images=rendered[1:],
+        duration=duration_ms,
+        loop=0,
+        optimize=True,
+    )
+    return out
+
+
+def summary_explanation(segments, result, method_name: str) -> str:
+    selected_times = []
+    for segment_idx in result.selected[:6]:
+        selected_times.append(segment_time_label(segments, int(segment_idx)))
+    suffix = "" if len(result.selected) <= 6 else f" 等 {len(result.selected)} 个片段"
+    method_note = (
+        "改进方法 S3-360-Guide 额外考虑事件覆盖和视角稳定性，让摘要更适合连续导览观看。"
+        if method_name == "S3-360-Guide"
+        else "该方法根据当前评分策略选择最适合保留的片段。"
+    )
+    return (
+        "系统先从上传的 360°视频中抽取采样帧，再估计每帧的显著区域和轻量视觉特征；"
+        "随后把视频切成短片段，选择信息量高、重复少、观看更连贯的片段组成摘要。"
+        f"本次摘要选中了 {', '.join(selected_times)}{suffix}。{method_note}"
+    )
+
+
+def segment_time_label(segments, segment_idx: int) -> str:
+    start_sec = float(segments.start_times[segment_idx])
+    end_sec = float(segments.end_times[segment_idx])
+    return f"{format_seconds(start_sec)}-{format_seconds(end_sec)}"
+
+
+def format_seconds(seconds: float) -> str:
+    seconds = max(float(seconds), 0.0)
+    minutes = int(seconds // 60)
+    remaining = seconds - minutes * 60
+    if minutes:
+        return f"{minutes}:{remaining:04.1f}"
+    return f"{remaining:.1f}s"
+
+
+def sampled_duration(video) -> float:
+    if video.frame_times is not None and len(video.frame_times):
+        return float(np.max(video.frame_times))
+    return float(video.num_frames / max(video.fps, 1e-8))
+
+
 def image_data_url(image: Image.Image, max_width: int = 1024) -> str:
     image = image.convert("RGB")
     if image.width > max_width:
@@ -216,12 +259,10 @@ def vr_tour_frames(video, segments, result, max_items: int = 8) -> list[dict[str
     for segment_idx in result.selected[:max_items]:
         frame_idx = int((segments.starts[segment_idx] + segments.ends[segment_idx] - 1) // 2)
         viewport = segments.viewport_xy[segment_idx]
-        start_sec = float(segments.starts[segment_idx] / segments.fps)
-        end_sec = float(segments.ends[segment_idx] / segments.fps)
         tour.append(
             {
                 "label": f"片段 {int(segment_idx)}",
-                "time": f"{start_sec:.1f}s-{end_sec:.1f}s",
+                "time": segment_time_label(segments, int(segment_idx)),
                 "src": image_data_url(raw_frame(video.frames[frame_idx])),
                 "yaw": float((viewport[0] - 0.5) * 2 * np.pi),
                 "pitch": float((0.5 - viewport[1]) * np.pi),
@@ -601,43 +642,41 @@ function clamp(value, min, max) {{
 """
 
 
-st.sidebar.header("参数")
-segment_size = st.sidebar.slider("片段长度（帧）", 4, 24, 8, 2)
-budget_ratio = st.sidebar.slider("摘要比例", 0.05, 0.4, 0.18, 0.01)
-method_name = st.sidebar.selectbox(
-    "展示方法",
-    ["S3-360", "Saliency+Importance", "Importance-only", "Saliency-only", "Uniform"],
-)
-st.sidebar.header("真实视频入口")
+st.sidebar.header("上传视频")
 uploaded_video = st.sidebar.file_uploader(
     "真实 360°视频（MP4 / MOV）",
     type=["mp4", "mov", "m4v"],
     key="video_upload",
 )
-video_max_frames = st.sidebar.slider("视频抽帧数量", 48, 180, 96, 12)
-video_sample_step = st.sidebar.slider("抽帧步长", 4, 30, 12, 2)
 
-data_path = load_from_upload()
-if uploaded_video is not None:
-    with st.spinner("正在抽取真实 360°视频帧并生成轻量特征..."):
-        video = convert_uploaded_video(
-            uploaded_video.name,
-            uploaded_video.getvalue(),
-            video_max_frames,
-            video_sample_step,
-        )
-elif data_path:
-    video = load_video(data_path)
-else:
-    video = load_video(cached_default_data())
+st.sidebar.header("摘要设置")
+method_name = "S3-360-Guide"
+st.sidebar.caption("摘要方法：S3-360-Guide")
+segment_size = st.sidebar.slider("片段长度（帧）", 2, 48, 8, 2)
+budget_ratio = st.sidebar.slider("摘要比例", 0.03, 0.7, 0.2, 0.01)
+video_max_frames = st.sidebar.slider("视频抽帧数量", 24, 360, 144, 12)
+video_sample_step = 12
+
+st.title("S³-360 360°视频摘要与智能导览")
+st.caption("上传一段 360°视频，系统会自动提取关键片段，生成摘要视频，并提供可拖拽的 360°导览视角。")
+
+if uploaded_video is None:
+    st.info("请在左侧上传 MP4 / MOV / M4V 格式的 360°视频。上传后页面会展示原始视频、摘要视频和 360°/VR 导览。")
+    st.stop()
+
+with st.spinner("正在抽取真实 360°视频帧并生成轻量特征..."):
+    video = convert_uploaded_video(
+        uploaded_video.name,
+        uploaded_video.getvalue(),
+        video_max_frames,
+        video_sample_step,
+    )
 
 segments = make_segments(video, segment_size=segment_size)
 results = summarize_all(segments, budget_ratio=budget_ratio)
-metrics = evaluate_all(segments, results)
 result = results[method_name]
+metrics = evaluate_all(segments, results)
 
-st.title("360°视频三阶段智能摘要系统")
-st.caption("复现 CA-SUM-360 / S³-360 的核心流程，并扩展为可交互、可导出、可解释的课堂演示系统")
 source_text = video.source or video.name
 note_text = f"。{video.note}" if video.note else ""
 st.markdown(
@@ -648,10 +687,18 @@ st.markdown(
     """
     <span class="flow-chip">Step 1: Saliency Maps</span>
     <span class="flow-chip">Step 2: 2D Event Video</span>
-    <span class="flow-chip">Step 3: CA-SUM / Temporal Summary</span>
+    <span class="flow-chip">Step 3: S3-360-Guide Summary</span>
     <span class="flow-chip">Extension: Interactive VR Preview</span>
     """,
     unsafe_allow_html=True,
+)
+st.caption(
+    f"已从整段视频均匀采样 {video.num_frames} 帧，当前时间轴覆盖到约 "
+    f"{format_seconds(sampled_duration(video))}；摘要时间均按原视频时间显示。"
+)
+st.info(
+    "当前默认使用远程最新版的 S3-360-Guide：在 S3-360 基础上加入事件覆盖增益和视角稳定性约束；"
+    "页面同时保留三阶段流程、2D event video 导出、最终短 2D 视频导出和 360°/VR 预览。"
 )
 
 metric_row = metrics.set_index("method").loc[method_name]
@@ -661,6 +708,21 @@ metric_cols[1].metric("Precision", f"{metric_row['precision']:.3f}")
 metric_cols[2].metric("Recall", f"{metric_row['recall']:.3f}")
 metric_cols[3].metric("重复率", f"{metric_row['repeat_rate']:.3f}")
 metric_cols[4].metric("事件覆盖率", f"{metric_row['event_coverage']:.3f}")
+
+safe_video_name = video.name.lower().replace(" ", "_").replace("/", "_")
+safe_method_name = method_slug(method_name)
+original_out = Path("outputs/demo") / f"{safe_video_name}_original.gif"
+summary_gif_out = Path("outputs/demo") / f"{safe_video_name}_{safe_method_name}_summary.gif"
+
+with st.spinner("正在生成原始视频和摘要视频预览..."):
+    original_gif = write_original_preview_video(video.frames, original_out)
+    summary_gif = write_storyboard_video(
+        video.frames,
+        video.saliency,
+        segments,
+        result,
+        summary_gif_out,
+    )
 
 frame_idx = st.slider("展示帧", 0, video.num_frames - 1, int(video.num_frames * 0.45))
 segment_idx = min(frame_idx // segment_size, segments.num_segments - 1)
@@ -718,19 +780,16 @@ with event_cols[1]:
         hide_index=True,
     )
 
-if video.frames is None:
-    st.info("当前数据没有 frames 字段，无法导出 2D event video。")
-else:
-    if st.button("生成 Step 2 的 2D Event Video（MP4）", use_container_width=True):
-        event_out = write_event_video(
-            video.frames,
-            segments,
-            event_segments,
-            Path("outputs") / "step2_2d_event_video.mp4",
-            fps=8.0,
-        )
-        st.video(str(event_out))
-        download_video_button(event_out, "下载 2D Event Video")
+if st.button("生成 Step 2 的 2D Event Video（MP4）", use_container_width=True):
+    event_out = write_event_video(
+        video.frames,
+        segments,
+        event_segments,
+        Path("outputs") / "step2_2d_event_video.mp4",
+        fps=8.0,
+    )
+    st.video(str(event_out))
+    download_video_button(event_out, "下载 2D Event Video")
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
 st.subheader("Extension. 360°/VR 交互预览")
@@ -753,52 +812,47 @@ st.subheader("Step 3. Final Output（最终短 2D 视频）")
 st.markdown(
     """
     <div class="step-band">
-      <strong>处理：</strong>对 2D event video 再做时间摘要，选择最关键、少重复、覆盖事件更多的片段。<br>
+      <strong>处理：</strong>对 2D event video 再做时间摘要，选择最关键、少重复、覆盖事件更多且观看更稳定的片段。<br>
       <strong>输出：</strong>最终可播放的短 2D summary video，可用于答辩直接展示。
     </div>
     """,
     unsafe_allow_html=True,
 )
+overview_cols = st.columns(2)
+with overview_cols[0]:
+    st.markdown('<div class="story-label">原始 360°视频预览</div>', unsafe_allow_html=True)
+    st.image(str(original_gif), use_container_width=True)
+with overview_cols[1]:
+    st.markdown('<div class="story-label">S3-360-Guide 摘要预览</div>', unsafe_allow_html=True)
+    st.image(str(summary_gif), use_container_width=True)
+
 previews = segment_previews(video, segments, result)
 if previews:
     preview_cols = st.columns(min(len(previews), 4))
     for idx, (selected_segment, image) in enumerate(previews):
         with preview_cols[idx % len(preview_cols)]:
-            start_sec = segments.starts[selected_segment] / segments.fps
-            end_sec = segments.ends[selected_segment] / segments.fps
             st.image(
                 image,
-                caption=f"片段 {selected_segment} | {start_sec:.1f}s-{end_sec:.1f}s",
+                caption=f"片段 {selected_segment} | {segment_time_label(segments, selected_segment)}",
                 use_container_width=True,
             )
 else:
     st.info("当前数据没有 frames 字段，无法显示缩略图。")
 
-if video.frames is None:
-    st.info("当前数据没有 frames 字段，无法导出最终短视频。")
-else:
-    final_cols = st.columns(2)
-    with final_cols[0]:
-        if st.button("生成最终短 2D Summary Video（MP4）", use_container_width=True):
-            summary_out = write_summary_video(
-                video.frames,
-                segments,
-                result,
-                Path("outputs") / f"step3_{method_slug(method_name)}_summary.mp4",
-                fps=8.0,
-            )
-            st.video(str(summary_out))
-            download_video_button(summary_out, "下载最终短视频")
-    with final_cols[1]:
-        if st.button("生成带热力图的 Storyboard GIF", use_container_width=True):
-            gif_out = write_storyboard_video(
-                video.frames,
-                video.saliency,
-                segments,
-                result,
-                Path("outputs") / f"{method_slug(method_name)}_storyboard.gif",
-            )
-            st.image(str(gif_out), use_container_width=True)
+final_cols = st.columns(2)
+with final_cols[0]:
+    if st.button("生成最终短 2D Summary Video（MP4）", use_container_width=True):
+        summary_mp4_out = write_summary_video(
+            video.frames,
+            segments,
+            result,
+            Path("outputs") / f"step3_{method_slug(method_name)}_summary.mp4",
+            fps=8.0,
+        )
+        st.video(str(summary_mp4_out))
+        download_video_button(summary_mp4_out, "下载最终短视频")
+with final_cols[1]:
+    download_video_button(summary_gif, "下载 Storyboard GIF")
 
 st.plotly_chart(timeline_figure(segments, result), use_container_width=True)
 
@@ -810,12 +864,19 @@ st.subheader("方法对比与工作量说明")
 st.plotly_chart(metrics_figure(metrics), use_container_width=True)
 st.dataframe(metrics, use_container_width=True, hide_index=True)
 
+with st.expander("系统解释"):
+    st.write(summary_explanation(segments, result, method_name))
+    st.write(
+        "摘要视频中的热力颜色表示系统估计的注意力区域，白色框表示推荐观看视角。"
+        "360°/VR 导览可以拖拽视角、自动导览、回到推荐视角、切换 VR 预览和全屏观看。"
+    )
+
 with st.expander("四人分工如何体现"):
     st.markdown(
         """
         - 成员 A：复现并整理 CA-SUM-360 / S³-360 的三阶段系统流程，完成片段划分、显著性和重要性打分。
         - 成员 B：完成 360°视频到普通 2D event video 的自动视角裁剪和 MP4 导出。
-        - 成员 C：完成最终时间摘要、方法对比指标、短视频/GIF 导出和实验结果表。
+        - 成员 C：完成 S3-360-Guide 时间摘要、方法对比指标、短视频/GIF 导出和实验结果表。
         - 成员 D：完成 Streamlit 可视化、交互式 360°/VR 预览、README 和答辩包装材料。
         """
     )

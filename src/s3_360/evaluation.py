@@ -7,24 +7,25 @@ from s3_360.methods import SummaryResult
 from s3_360.segmentation import SegmentTable
 
 
-def evaluate_summary(segments: SegmentTable, result: SummaryResult) -> dict[str, float | str | int]:
+def evaluate_summary(
+    segments: SegmentTable,
+    result: SummaryResult,
+    allow_pseudo_reference: bool = True,
+    user_reference_policy: str = "max",
+) -> dict[str, float | str | int]:
     selected_mask = np.zeros(segments.num_segments, dtype=bool)
     selected_mask[result.selected] = True
-    label_positive = (
-        segments.label_score >= 0.5
-        if segments.label_score is not None
-        else _pseudo_reference(segments)
+    precision, recall, f_score, reference_source, reference_count = _reference_metrics(
+        segments,
+        selected_mask,
+        allow_pseudo_reference=allow_pseudo_reference,
+        user_reference_policy=user_reference_policy,
     )
-
-    tp = int(np.sum(selected_mask & label_positive))
-    fp = int(np.sum(selected_mask & ~label_positive))
-    fn = int(np.sum(~selected_mask & label_positive))
-    precision = tp / max(tp + fp, 1)
-    recall = tp / max(tp + fn, 1)
-    f_score = 2 * precision * recall / max(precision + recall, 1e-8)
 
     return {
         "method": result.method,
+        "reference_source": reference_source,
+        "reference_count": reference_count,
         "selected_segments": int(len(result.selected)),
         "summary_ratio": float(selected_mask.mean()),
         "precision": precision,
@@ -37,8 +38,21 @@ def evaluate_summary(segments: SegmentTable, result: SummaryResult) -> dict[str,
     }
 
 
-def evaluate_all(segments: SegmentTable, results: dict[str, SummaryResult]) -> pd.DataFrame:
-    rows = [evaluate_summary(segments, result) for result in results.values()]
+def evaluate_all(
+    segments: SegmentTable,
+    results: dict[str, SummaryResult],
+    allow_pseudo_reference: bool = True,
+    user_reference_policy: str = "max",
+) -> pd.DataFrame:
+    rows = [
+        evaluate_summary(
+            segments,
+            result,
+            allow_pseudo_reference=allow_pseudo_reference,
+            user_reference_policy=user_reference_policy,
+        )
+        for result in results.values()
+    ]
     return pd.DataFrame(rows).sort_values("f_score", ascending=False)
 
 
@@ -89,14 +103,56 @@ def selection_table(segments: SegmentTable, result: SummaryResult) -> pd.DataFra
                 "segment": int(idx),
                 "start_frame": int(segments.starts[idx]),
                 "end_frame": int(segments.ends[idx]),
-                "start_sec": round(float(segments.starts[idx] / segments.fps), 2),
-                "end_sec": round(float(segments.ends[idx] / segments.fps), 2),
+                "start_sec": round(float(segments.start_times[idx]), 2),
+                "end_sec": round(float(segments.end_times[idx]), 2),
                 "saliency": float(segments.saliency_score[idx]),
                 "event_id": int(segments.event_ids[idx]) if segments.event_ids is not None else -1,
                 "score": float(result.score[idx]),
             }
         )
     return pd.DataFrame(rows)
+
+
+def _reference_metrics(
+    segments: SegmentTable,
+    selected_mask: np.ndarray,
+    allow_pseudo_reference: bool,
+    user_reference_policy: str,
+) -> tuple[float, float, float, str, int]:
+    if segments.user_summary_score is not None:
+        user_scores = [
+            _binary_metrics(selected_mask, user_score >= 0.5)
+            for user_score in segments.user_summary_score
+        ]
+        if user_reference_policy == "mean":
+            precision = float(np.mean([score[0] for score in user_scores]))
+            recall = float(np.mean([score[1] for score in user_scores]))
+            f_score = float(np.mean([score[2] for score in user_scores]))
+        elif user_reference_policy == "max":
+            precision, recall, f_score = max(user_scores, key=lambda score: score[2])
+        else:
+            raise ValueError("user_reference_policy must be 'max' or 'mean'.")
+        return precision, recall, f_score, "user_summaries", int(len(user_scores))
+
+    if segments.label_score is not None:
+        precision, recall, f_score = _binary_metrics(selected_mask, segments.label_score >= 0.5)
+        return precision, recall, f_score, "labels", 1
+
+    if not allow_pseudo_reference:
+        raise ValueError("Strict evaluation requires labels or user_summaries.")
+
+    precision, recall, f_score = _binary_metrics(selected_mask, _pseudo_reference(segments))
+    return precision, recall, f_score, "pseudo_saliency_quantile", 1
+
+
+def _binary_metrics(selected_mask: np.ndarray, label_positive: np.ndarray) -> tuple[float, float, float]:
+    tp = int(np.sum(selected_mask & label_positive))
+    fp = int(np.sum(selected_mask & ~label_positive))
+    fn = int(np.sum(~selected_mask & label_positive))
+    precision = tp / max(tp + fp, 1)
+    recall = tp / max(tp + fn, 1)
+    f_score = 2 * precision * recall / max(precision + recall, 1e-8)
+    return precision, recall, f_score
 
 
 def _pseudo_reference(segments: SegmentTable) -> np.ndarray:
