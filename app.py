@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from io import BytesIO
 from tempfile import NamedTemporaryFile
@@ -38,6 +39,40 @@ from s3_360.visualization import (
     viewport_box,
 )
 from scripts.make_real360_sample import from_video_file
+
+
+BUILTIN_TOUR_DEMOS = {
+    "不使用内置素材（手动上传）": {
+        "path": None,
+        "scenario": "校园/景区/展厅导览",
+        "map": "",
+    },
+    "Flores Park 360 Walking Tour（主推荐，4:10）": {
+        "path": Path("data/raw/videos/tour_scenarios/flores_park_360_walking_tour.mp4"),
+        "scenario": "景区步道/街区漫游",
+        "map": "https://www.openstreetmap.org/search?query=Flores%20Park%201020%20W%20Etiwanda%20Avenue%20Rialto%20CA",
+    },
+    "Woodbury Central Park 360（快速演示，1:30）": {
+        "path": Path("data/raw/videos/tour_scenarios/woodbury_central_park_360.mp4"),
+        "scenario": "景区步道/街区漫游",
+        "map": "https://www.openstreetmap.org/search?query=Central%20Park%20Woodbury%20MN",
+    },
+    "Texas A&M Student Center 360（校园，1:38）": {
+        "path": Path("data/raw/videos/tour_scenarios/tamu_memorial_student_center_360_tour.mp4"),
+        "scenario": "校园开放日",
+        "map": "https://www.openstreetmap.org/search?query=Memorial%20Student%20Center%20Texas%20A%26M",
+    },
+    "Rockwood Library Maker Space 360（展厅，2:44）": {
+        "path": Path("data/raw/videos/tour_scenarios/rockwood_library_maker_space_360_tour.mp4"),
+        "scenario": "实验室/空间参观",
+        "map": "https://www.openstreetmap.org/search?query=Rockwood%20Library%20Maker%20Space%20Gresham%20OR",
+    },
+    "Joe Sampson Park 360 Walking Tour（长路线，6:39）": {
+        "path": Path("data/raw/videos/tour_scenarios/joe_sampson_park_360_walking_tour.mp4"),
+        "scenario": "景区步道/街区漫游",
+        "map": "https://www.openstreetmap.org/search?query=Joe%20Sampson%20Park%20650%20W.%20Randall%20Avenue%20Rialto%20CA",
+    },
+}
 
 
 st.set_page_config(page_title="S3-360 VR Guide", layout="wide")
@@ -155,9 +190,15 @@ def convert_uploaded_video(name: str, content: bytes, max_frames: int, sample_st
         tmp_path = Path(tmp.name)
     args = SimpleNamespace(max_frames=max_frames, sample_step=sample_step, width=512, height=256)
     try:
-        return from_video_file(tmp_path, args)
+        video = from_video_file(tmp_path, args)
+        return replace(video, name=Path(name).stem)
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+@st.cache_data(show_spinner=False)
+def read_builtin_video(path: str) -> bytes:
+    return Path(path).read_bytes()
 
 
 @st.cache_data(show_spinner=False)
@@ -1835,20 +1876,39 @@ function clampIndex(idx) {
     )
 
 
+st.sidebar.header("演示素材")
+builtin_demo_label = st.sidebar.selectbox(
+    "内置导览演示视频",
+    list(BUILTIN_TOUR_DEMOS.keys()),
+    index=1,
+)
+selected_demo = BUILTIN_TOUR_DEMOS[builtin_demo_label]
+selected_demo_path = selected_demo["path"]
+if selected_demo_path is not None:
+    if selected_demo_path.exists():
+        st.sidebar.caption(f"已选择：`{selected_demo_path}`")
+    else:
+        st.sidebar.warning(f"内置视频文件不存在：{selected_demo_path}。可运行 `python scripts/download_tour_demos.py` 下载。")
+
 st.sidebar.header("上传视频")
 uploaded_video = st.sidebar.file_uploader(
-    "真实 360°视频（MP4 / MOV）",
+    "真实 360°视频（MP4 / MOV，可覆盖内置素材）",
     type=["mp4", "mov", "m4v"],
     key="video_upload",
 )
 
 st.sidebar.header("导览场景")
+scenario_options = ["校园/景区/展厅导览", "校园开放日", "博物馆/展馆参观", "景区步道/街区漫游", "实验室/空间参观"]
+default_scenario = selected_demo["scenario"]
+default_scenario_index = scenario_options.index(default_scenario) if default_scenario in scenario_options else 0
 tour_scenario = st.sidebar.selectbox(
     "场景类型",
-    ["校园/景区/展厅导览", "校园开放日", "博物馆/展馆参观", "景区步道/街区漫游", "实验室/空间参观"],
+    scenario_options,
+    index=default_scenario_index,
 )
 map_reference_url = st.sidebar.text_input(
     "地图参考链接（可选）",
+    value=selected_demo["map"],
     placeholder="例如 OpenStreetMap / 校园地图 / 展馆平面图链接",
 )
 
@@ -1866,15 +1926,26 @@ st.sidebar.caption(
 st.title("S³-360 VR 360°视频摘要与智能导览")
 st.caption("上传一段 360°视频，系统会提取关键导览点，生成可拖拽观看的 VR 导览路线。")
 
-if uploaded_video is None:
-    st.info("请在左侧上传 MP4 / MOV / M4V 格式的 360°视频。上传后页面会展示原始视频、摘要视频和 360°/VR 导览。")
-    st.stop()
+active_video_name = None
+uploaded_content = None
+if uploaded_video is not None:
+    active_video_name = uploaded_video.name
+    uploaded_content = uploaded_video.getvalue()
+elif selected_demo_path is not None and selected_demo_path.exists():
+    active_video_name = selected_demo_path.name
+    uploaded_content = read_builtin_video(str(selected_demo_path))
 
-uploaded_content = uploaded_video.getvalue()
+if uploaded_content is None or active_video_name is None:
+    st.info(
+        "请在左侧选择一个内置演示视频，或上传 MP4 / MOV / M4V 格式的 360°视频。"
+        "如果内置视频不存在，可运行 `python scripts/download_tour_demos.py` 下载演示素材。"
+        "上传后页面会展示原始视频、摘要视频和 360°/VR 导览。"
+    )
+    st.stop()
 
 with st.spinner("正在抽取真实 360°视频帧并生成轻量特征..."):
     video = convert_uploaded_video(
-        uploaded_video.name,
+        active_video_name,
         uploaded_content,
         video_max_frames,
         video_sample_step,
@@ -1890,7 +1961,9 @@ tour_points = build_tour_points(segments, result)
 route_metrics = tour_route_metrics(segments, result)
 guide_points = identify_guide_points(segments, result)
 
-source_text = video.source or video.name
+source_text = active_video_name
+if video.source and video.source != active_video_name:
+    source_text = f"{active_video_name} · {video.source}"
 note_text = f"。{video.note}" if video.note else ""
 st.markdown(
     f'<div class="source-line">当前样本：<b>{source_text}</b>{note_text}</div>',
@@ -1974,7 +2047,7 @@ with tour_cols[1]:
         st.caption("可以在左侧填入 OpenStreetMap、校园地图或展馆平面图链接，用于答辩时对照路线。")
 
 report_md = tour_report_markdown(
-    video_name=uploaded_video.name,
+    video_name=active_video_name,
     source=source_text,
     sampled_duration_sec=sampled_duration(video),
     method_name="S3-360-TourGuide",
@@ -1983,7 +2056,7 @@ report_md = tour_report_markdown(
     map_reference_url=map_reference_url,
 )
 report_json = tour_report_json(
-    video_name=uploaded_video.name,
+    video_name=active_video_name,
     source=source_text,
     sampled_duration_sec=sampled_duration(video),
     method_name="S3-360-TourGuide",
@@ -2057,8 +2130,8 @@ if len(uploaded_content) > 120 * 1024 * 1024:
 video_chapters = guided_video_chapters(segments, result, guide_points)
 components.html(
     immersive_video_player_html(
-        uploaded_video.name,
-        uploaded_video_data_url(uploaded_video.name, uploaded_content),
+        active_video_name,
+        uploaded_video_data_url(active_video_name, uploaded_content),
         video_chapters,
     ),
     height=660,

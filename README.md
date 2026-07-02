@@ -129,6 +129,12 @@ python scripts/make_real360_sample.py \
 
 也可以在网页侧边栏直接上传 `MP4/MOV`，系统会即时抽帧并生成轻量显著性和特征。SHD360 的 `sequence_links.txt` 指向 YouTube 视频；若 YouTube 要求机器人验证，需要先手动下载视频，或使用本地 `--video-path` / `--frames-dir`。
 
+下载页面内置导览演示素材：
+
+```bash
+python scripts/download_tour_demos.py
+```
+
 长视频上传时，网页会优先在整段视频上均匀采样。若 4-5 分钟视频显示的时间范围过短，可以在侧边栏提高“最多采样帧数”；如果视频读取不到总帧数，系统会先按“兜底抽帧步长”扫完整段，再均匀压到最多采样帧数，并按原视频 FPS 记录时间戳。
 
 生成模拟数据 fallback：
