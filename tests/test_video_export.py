@@ -7,6 +7,7 @@ from s3_360.segmentation import make_segments
 from s3_360.video import (
     crop_rectangular_viewport_frame,
     perspective_viewport_frame,
+    write_viewport_video,
     write_event_video,
     write_summary_video,
 )
@@ -63,10 +64,47 @@ def test_viewport_video_exports(tmp_path) -> None:
     try:
         event_frame = event_reader.get_data(0)
         summary_frame = summary_reader.get_data(0)
+        event_frame_count = event_reader.count_frames()
     finally:
         event_reader.close()
         summary_reader.close()
 
     assert video.frames.shape[1:3] == (48, 96)
-    assert event_frame.shape[:2] == (360, 640)
-    assert summary_frame.shape[:2] == (360, 640)
+    assert event_frame.shape[:2] == (540, 960)
+    assert summary_frame.shape[:2] == (540, 960)
+    assert event_frame_count >= 30
+
+
+def test_viewport_video_playback_speed_shortens_preserved_timing(tmp_path) -> None:
+    video = generate_demo_video(num_frames=24, seed=13)
+    segments = make_segments(video, segment_size=6)
+    event_segments = np.asarray([0, 1], dtype=np.int32)
+
+    normal_path = write_viewport_video(
+        video.frames,
+        segments,
+        event_segments,
+        tmp_path / "normal.mp4",
+        fps=6.0,
+        playback_speed=1.0,
+    )
+    faster_path = write_viewport_video(
+        video.frames,
+        segments,
+        event_segments,
+        tmp_path / "faster.mp4",
+        fps=6.0,
+        playback_speed=2.0,
+    )
+
+    normal_reader = imageio.get_reader(normal_path)
+    faster_reader = imageio.get_reader(faster_path)
+    try:
+        normal_count = normal_reader.count_frames()
+        faster_count = faster_reader.count_frames()
+    finally:
+        normal_reader.close()
+        faster_reader.close()
+
+    assert faster_count < normal_count
+    assert faster_count >= 12

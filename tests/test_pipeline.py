@@ -1,7 +1,9 @@
 import pandas as pd
+import numpy as np
 
 from s3_360.data import generate_demo_video
 from s3_360.data import save_npz
+from s3_360.data import VideoData
 from s3_360.evaluation import evaluate_all, guide_path_table
 from s3_360.methods import summarize_all
 from s3_360.segmentation import make_segments
@@ -89,6 +91,25 @@ def test_tourguide_report_outputs_route_points() -> None:
     assert 0 <= route_metrics["tour_route_score"] <= 100
     assert "S3-360-TourGuide 导览报告" in markdown
     assert '"tour_points"' in payload
+
+
+def test_segment_viewport_prefers_comfortable_horizon_over_poles() -> None:
+    frame_count = 8
+    height, width = 20, 40
+    saliency = np.zeros((frame_count, height, width), dtype=np.float32)
+    saliency[:, 19, 8] = 1.0
+    saliency[:, 10, 30] = 0.35
+    video = VideoData(
+        name="pole_saliency_demo",
+        features=np.zeros((frame_count, 4), dtype=np.float32),
+        saliency=saliency,
+        frames=np.zeros((frame_count, height, width, 3), dtype=np.uint8),
+        fps=4.0,
+    )
+
+    segments = make_segments(video, segment_size=8)
+
+    assert segments.viewport_xy[0, 1] < 0.7
 
 
 def test_strict_evaluation_uses_real_user_summaries() -> None:

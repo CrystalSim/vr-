@@ -94,6 +94,9 @@ def _segment_times(video: VideoData, starts: np.ndarray, ends: np.ndarray) -> tu
 
 def _mean_saliency_peak(maps: np.ndarray) -> np.ndarray:
     saliency_map = maps.mean(axis=0)
-    y, x = np.unravel_index(int(np.argmax(saliency_map)), saliency_map.shape)
     height, width = saliency_map.shape
+    y_norm = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, None]
+    horizon_prior = 0.08 + 0.92 * np.exp(-0.5 * ((y_norm - 0.48) / 0.24) ** 2)
+    comfort_map = saliency_map * horizon_prior
+    y, x = np.unravel_index(int(np.argmax(comfort_map)), comfort_map.shape)
     return np.array([x / max(width - 1, 1), y / max(height - 1, 1)], dtype=np.float32)

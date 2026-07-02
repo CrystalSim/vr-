@@ -20,6 +20,7 @@ import streamlit.components.v1 as components
 from PIL import Image, ImageDraw
 
 from s3_360.camera_motion import analyze_camera_motion
+from s3_360.data import load_video
 from s3_360.evaluation import guide_path_table, selection_table
 from s3_360.events import build_event_subvolumes, covered_segment_ratio
 from s3_360.methods import summarize_all
@@ -41,13 +42,28 @@ from s3_360.visualization import (
 from scripts.make_real360_sample import from_video_file
 
 
+JOE_SAMPSON_HD_PATH = Path("data/raw/videos/tour_scenarios/joe_sampson_park_360_walking_tour_hd.mov")
+JOE_SAMPSON_MP4_PATH = Path("data/raw/videos/tour_scenarios/joe_sampson_park_360_walking_tour.mp4")
+JOE_SAMPSON_CACHE_PATH = Path("data/real360_sample/joe_sampson_hd_best_demo.npz")
+DEMO_FRAME_SIZE = (960, 540)
+DEMO_PLAYBACK_SPEED = 2.0
+DEMO_OUTPUT_SIZE = DEMO_FRAME_SIZE
+DEMO_EXPORT_TAG = "comfort_v2"
+
+
 BUILTIN_TOUR_DEMOS = {
     "不使用内置素材（手动上传）": {
         "path": None,
         "scenario": "校园/景区/展厅导览",
         "map": "",
     },
-    "Flores Park 360 Walking Tour（主推荐，4:10）": {
+    "Joe Sampson Park 360（最佳演示，平稳路线）": {
+        "path": JOE_SAMPSON_MP4_PATH,
+        "cache": JOE_SAMPSON_CACHE_PATH,
+        "scenario": "景区步道/街区漫游",
+        "map": "https://www.openstreetmap.org/search?query=Joe%20Sampson%20Park%20650%20W.%20Randall%20Avenue%20Rialto%20CA",
+    },
+    "Flores Park 360 Walking Tour（路线较丰富，4:10）": {
         "path": Path("data/raw/videos/tour_scenarios/flores_park_360_walking_tour.mp4"),
         "scenario": "景区步道/街区漫游",
         "map": "https://www.openstreetmap.org/search?query=Flores%20Park%201020%20W%20Etiwanda%20Avenue%20Rialto%20CA",
@@ -66,11 +82,6 @@ BUILTIN_TOUR_DEMOS = {
         "path": Path("data/raw/videos/tour_scenarios/rockwood_library_maker_space_360_tour.mp4"),
         "scenario": "实验室/空间参观",
         "map": "https://www.openstreetmap.org/search?query=Rockwood%20Library%20Maker%20Space%20Gresham%20OR",
-    },
-    "Joe Sampson Park 360 Walking Tour（长路线，6:39）": {
-        "path": Path("data/raw/videos/tour_scenarios/joe_sampson_park_360_walking_tour.mp4"),
-        "scenario": "景区步道/街区漫游",
-        "map": "https://www.openstreetmap.org/search?query=Joe%20Sampson%20Park%20650%20W.%20Randall%20Avenue%20Rialto%20CA",
     },
 }
 
@@ -188,7 +199,12 @@ def convert_uploaded_video(name: str, content: bytes, max_frames: int, sample_st
     with NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(content)
         tmp_path = Path(tmp.name)
-    args = SimpleNamespace(max_frames=max_frames, sample_step=sample_step, width=512, height=256)
+    args = SimpleNamespace(
+        max_frames=max_frames,
+        sample_step=sample_step,
+        width=DEMO_FRAME_SIZE[0],
+        height=DEMO_FRAME_SIZE[1],
+    )
     try:
         video = from_video_file(tmp_path, args)
         return replace(video, name=Path(name).stem)
@@ -199,6 +215,11 @@ def convert_uploaded_video(name: str, content: bytes, max_frames: int, sample_st
 @st.cache_data(show_spinner=False)
 def read_builtin_video(path: str) -> bytes:
     return Path(path).read_bytes()
+
+
+@st.cache_data(show_spinner=False)
+def load_cached_demo(path: str):
+    return load_video(path)
 
 
 @st.cache_data(show_spinner=False)
@@ -243,7 +264,7 @@ def guided_frame(video_frame: np.ndarray, saliency: np.ndarray, viewport_xy: np.
 
 
 def viewport_crop(video_frame: np.ndarray, viewport_xy: np.ndarray) -> Image.Image:
-    return Image.fromarray(perspective_viewport_frame(video_frame, viewport_xy, output_size=(512, 288)))
+    return Image.fromarray(perspective_viewport_frame(video_frame, viewport_xy, output_size=DEMO_OUTPUT_SIZE))
 
 
 def segment_previews(video, segments, result, max_items: int = 6) -> list[tuple[int, Image.Image]]:
@@ -476,11 +497,16 @@ def download_video_button(path: Path, label: str) -> None:
     )
 
 
+def reusable_media_file(path: Path, min_bytes: int = 4096) -> bool:
+    return path.exists() and path.stat().st_size >= min_bytes
+
+
 def write_original_preview_video(
     frames: np.ndarray,
     out_path: str | Path,
     fps: float = 8.0,
-    max_frames: int = 96,
+    max_frames: int = 48,
+    preview_width: int = 640,
 ) -> Path:
     out = Path(out_path)
     if out.suffix.lower() != ".gif":
@@ -491,7 +517,13 @@ def write_original_preview_video(
         chosen = frames[indices]
     else:
         chosen = frames
-    rendered = [Image.fromarray(frame.astype(np.uint8)).convert("RGB") for frame in chosen]
+    rendered = []
+    for frame in chosen:
+        image = Image.fromarray(frame.astype(np.uint8)).convert("RGB")
+        if image.width > preview_width:
+            preview_height = int(image.height * preview_width / image.width)
+            image = image.resize((preview_width, preview_height), Image.Resampling.BICUBIC)
+        rendered.append(image)
     duration_ms = max(int(1000 / fps), 1)
     rendered[0].save(
         out,
@@ -579,7 +611,7 @@ def image_data_url(image: Image.Image, max_width: int = 1024) -> str:
         target_height = int(image.height * max_width / image.width)
         image = image.resize((max_width, target_height), Image.Resampling.BICUBIC)
     buffer = BytesIO()
-    image.save(buffer, format="JPEG", quality=82, optimize=True)
+    image.save(buffer, format="JPEG", quality=92, optimize=True)
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/jpeg;base64,{encoded}"
 
@@ -1882,11 +1914,17 @@ builtin_demo_label = st.sidebar.selectbox(
 )
 selected_demo = BUILTIN_TOUR_DEMOS[builtin_demo_label]
 selected_demo_path = selected_demo["path"]
+selected_cache_path = selected_demo.get("cache")
 if selected_demo_path is not None:
     if selected_demo_path.exists():
         st.sidebar.caption(f"已选择：`{selected_demo_path}`")
     else:
         st.sidebar.warning(f"内置视频文件不存在：{selected_demo_path}。可运行 `python scripts/download_tour_demos.py` 下载。")
+if selected_cache_path is not None:
+    if selected_cache_path.exists():
+        st.sidebar.caption(f"分析缓存：`{selected_cache_path}`")
+    else:
+        st.sidebar.caption("未找到高清分析缓存，将直接从视频抽帧。")
 
 st.sidebar.header("上传视频")
 uploaded_video = st.sidebar.file_uploader(
@@ -1918,7 +1956,8 @@ budget_ratio = st.sidebar.slider("摘要比例", 0.03, 0.7, 0.2, 0.01)
 video_max_frames = st.sidebar.slider("最多采样帧数", 96, 1200, 360, 24)
 video_sample_step = st.sidebar.slider("兜底抽帧步长", 1, 60, 12, 1)
 st.sidebar.caption(
-    "优先在整段视频上均匀采样；若读取不到总帧数，会先按兜底步长扫完整段，再均匀压到最多采样帧数。"
+    f"优先在整段视频上均匀采样；当前处理帧尺寸 {DEMO_FRAME_SIZE[0]}×{DEMO_FRAME_SIZE[1]}，"
+    f"2D 导出 {DEMO_OUTPUT_SIZE[0]}×{DEMO_OUTPUT_SIZE[1]}，按约 {DEMO_PLAYBACK_SPEED:.0f}x 展示节奏播放。"
 )
 
 st.title("S³-360 VR 360°视频摘要与智能导览")
@@ -1926,12 +1965,15 @@ st.caption("上传一段 360°视频，系统会提取关键导览点，生成�
 
 active_video_name = None
 uploaded_content = None
+analysis_cache_path = None
 if uploaded_video is not None:
     active_video_name = uploaded_video.name
     uploaded_content = uploaded_video.getvalue()
 elif selected_demo_path is not None and selected_demo_path.exists():
     active_video_name = selected_demo_path.name
     uploaded_content = read_builtin_video(str(selected_demo_path))
+    if selected_cache_path is not None and selected_cache_path.exists():
+        analysis_cache_path = selected_cache_path
 
 if uploaded_content is None or active_video_name is None:
     st.info(
@@ -1941,13 +1983,17 @@ if uploaded_content is None or active_video_name is None:
     )
     st.stop()
 
-with st.spinner("正在抽取真实 360°视频帧并生成轻量特征..."):
-    video = convert_uploaded_video(
-        active_video_name,
-        uploaded_content,
-        video_max_frames,
-        video_sample_step,
-    )
+if analysis_cache_path is not None:
+    with st.spinner("正在载入高清导览演示缓存..."):
+        video = load_cached_demo(str(analysis_cache_path))
+else:
+    with st.spinner("正在抽取真实 360°视频帧并生成轻量特征..."):
+        video = convert_uploaded_video(
+            active_video_name,
+            uploaded_content,
+            video_max_frames,
+            video_sample_step,
+        )
 
 segments = make_segments(video, segment_size=segment_size)
 results = summarize_all(segments, budget_ratio=budget_ratio)
@@ -2286,34 +2332,51 @@ with st.expander("导览点识别结果与路线技术细节"):
 
 safe_video_name = video.name.lower().replace(" ", "_").replace("/", "_")
 safe_method_name = method_slug(method_name)
-original_out = Path("outputs/demo") / f"{safe_video_name}_original.gif"
-summary_gif_out = Path("outputs/demo") / f"{safe_video_name}_{safe_method_name}_summary.gif"
 event_segments = event_segment_indices(segments)
-event_mp4_out = Path("outputs/demo") / f"{safe_video_name}_step2_2d_event_video.mp4"
-summary_mp4_out = Path("outputs/demo") / f"{safe_video_name}_step3_{safe_method_name}_2d_summary.mp4"
+export_variant = (
+    f"{DEMO_EXPORT_TAG}_s{segment_size}_b{int(round(budget_ratio * 100)):02d}"
+    f"_spd{int(round(DEMO_PLAYBACK_SPEED * 10)):02d}"
+)
+original_out = Path("outputs/demo") / f"{safe_video_name}_{export_variant}_original.gif"
+summary_gif_out = Path("outputs/demo") / f"{safe_video_name}_{export_variant}_{safe_method_name}_summary.gif"
+event_mp4_out = Path("outputs/demo") / f"{safe_video_name}_{export_variant}_step2_2d_event_video.mp4"
+summary_mp4_out = Path("outputs/demo") / f"{safe_video_name}_{export_variant}_step3_{safe_method_name}_2d_summary.mp4"
+reuse_demo_outputs = analysis_cache_path is not None
 
 with st.spinner("正在生成 2D event video、最终短 2D 视频和解释用预览..."):
-    original_gif = write_original_preview_video(video.frames, original_out)
-    summary_gif = write_storyboard_video(
-        video.frames,
-        video.saliency,
-        segments,
-        result,
-        summary_gif_out,
+    original_gif = (
+        original_out
+        if reuse_demo_outputs and reusable_media_file(original_out)
+        else write_original_preview_video(video.frames, original_out)
     )
-    event_mp4 = write_event_video(
-        video.frames,
-        segments,
-        event_segments,
-        event_mp4_out,
-        fps=8.0,
+    summary_gif = (
+        summary_gif_out
+        if reuse_demo_outputs and reusable_media_file(summary_gif_out)
+        else write_storyboard_video(video.frames, video.saliency, segments, result, summary_gif_out)
     )
-    summary_mp4 = write_summary_video(
-        video.frames,
-        segments,
-        result,
-        summary_mp4_out,
-        fps=8.0,
+    event_mp4 = (
+        event_mp4_out
+        if reuse_demo_outputs and reusable_media_file(event_mp4_out)
+        else write_event_video(
+            video.frames,
+            segments,
+            event_segments,
+            event_mp4_out,
+            fps=8.0,
+            playback_speed=DEMO_PLAYBACK_SPEED,
+        )
+    )
+    summary_mp4 = (
+        summary_mp4_out
+        if reuse_demo_outputs and reusable_media_file(summary_mp4_out)
+        else write_summary_video(
+            video.frames,
+            segments,
+            result,
+            summary_mp4_out,
+            fps=8.0,
+            playback_speed=DEMO_PLAYBACK_SPEED,
+        )
     )
 
 frame_idx = st.slider("展示帧", 0, video.num_frames - 1, int(video.num_frames * 0.45))
@@ -2350,7 +2413,7 @@ st.subheader("Step 2. 2D Event Video（中间输出 2）")
 st.markdown(
     """
     <div class="step-band">
-      <strong>处理：</strong>根据显著性区域聚合事件，并把 360°ERP 全景帧投影成普通 16:9 透视视角。<br>
+      <strong>处理：</strong>根据显著性区域聚合事件，把 360°ERP 全景帧投影成普通 16:9 透视视角，并按约 2x 展示节奏补帧，避免过快或过拖。<br>
       <strong>输出：</strong>一个不再是 360°的 2D event video，保留所有检测到的重要事件，但还没有做最终时间摘要。
     </div>
     """,
@@ -2398,7 +2461,7 @@ st.subheader("Step 3. Final Output（最终短 2D 视频）")
 st.markdown(
     """
     <div class="step-band">
-      <strong>处理：</strong>对 2D event video 再做时间摘要，选择最关键、少重复、覆盖事件更多且观看更稳定的片段。<br>
+      <strong>处理：</strong>对 2D event video 再做时间摘要，选择最关键、少重复、覆盖事件更多且观看更稳定的片段，并保留片段内部节奏后适度压缩时长。<br>
       <strong>输出：</strong>最终可播放的短 2D summary video，可用于答辩直接展示。
     </div>
     """,

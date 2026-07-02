@@ -14,7 +14,7 @@ from s3_360.visualization import overlay_heatmap, viewport_box
 def crop_viewport_frame(
     frame: np.ndarray,
     viewport_xy: np.ndarray,
-    output_size: tuple[int, int] = (640, 360),
+    output_size: tuple[int, int] = (960, 540),
     box_ratio: tuple[float, float] = (0.40, 0.45),
 ) -> np.ndarray:
     del box_ratio
@@ -24,7 +24,7 @@ def crop_viewport_frame(
 def perspective_viewport_frame(
     frame: np.ndarray,
     viewport_xy: np.ndarray,
-    output_size: tuple[int, int] = (640, 360),
+    output_size: tuple[int, int] = (960, 540),
     hfov_deg: float = 72.0,
 ) -> np.ndarray:
     """Render an ordinary perspective viewport from an equirectangular panorama."""
@@ -95,7 +95,7 @@ def _viewport_to_radians(viewport_xy: np.ndarray) -> tuple[float, float]:
 def crop_rectangular_viewport_frame(
     frame: np.ndarray,
     viewport_xy: np.ndarray,
-    output_size: tuple[int, int] = (640, 360),
+    output_size: tuple[int, int] = (960, 540),
     box_ratio: tuple[float, float] = (0.40, 0.45),
 ) -> np.ndarray:
     image = Image.fromarray(frame)
@@ -110,8 +110,10 @@ def write_viewport_video(
     selected_segments: np.ndarray | list[int],
     out_path: str | Path,
     fps: float = 12.0,
-    output_size: tuple[int, int] = (640, 360),
+    output_size: tuple[int, int] = (960, 540),
     label_prefix: str = "event",
+    preserve_timing: bool = True,
+    playback_speed: float = 1.0,
 ) -> Path:
     out = Path(out_path)
     if out.suffix.lower() != ".mp4":
@@ -122,12 +124,25 @@ def write_viewport_video(
     if not selected:
         raise ValueError("No segments were selected for viewport video export.")
 
-    with imageio.get_writer(out, fps=fps, codec="libx264", quality=8, macro_block_size=1) as writer:
+    with imageio.get_writer(
+        out,
+        fps=fps,
+        codec="libx264",
+        quality=10,
+        macro_block_size=1,
+        pixelformat="yuv420p",
+        output_params=["-preset", "medium", "-crf", "18"],
+    ) as writer:
         for segment_idx in sorted(selected):
-            start = int(segments.starts[segment_idx])
-            end = int(segments.ends[segment_idx])
             viewport_xy = segments.viewport_xy[segment_idx]
-            for frame_idx in range(start, end):
+            frame_indices = _segment_output_indices(
+                segments,
+                segment_idx,
+                fps,
+                preserve_timing=preserve_timing,
+                playback_speed=playback_speed,
+            )
+            for frame_idx in frame_indices:
                 canvas = crop_viewport_frame(frames[frame_idx], viewport_xy, output_size=output_size)
                 image = Image.fromarray(canvas)
                 draw = ImageDraw.Draw(image)
@@ -138,12 +153,43 @@ def write_viewport_video(
     return out
 
 
+def _segment_output_indices(
+    segments: SegmentTable,
+    segment_idx: int,
+    output_fps: float,
+    preserve_timing: bool = True,
+    playback_speed: float = 1.0,
+) -> np.ndarray:
+    start = int(segments.starts[segment_idx])
+    end = int(segments.ends[segment_idx])
+    source_count = max(end - start, 1)
+    if not preserve_timing:
+        return np.arange(start, end, dtype=np.int32)
+
+    duration = _segment_duration_seconds(segments, segment_idx, source_count) / max(float(playback_speed), 1e-8)
+    target_count = max(source_count, int(round(duration * max(output_fps, 1e-8))))
+    source_offsets = np.floor((np.arange(target_count, dtype=np.float32) + 0.5) / target_count * source_count)
+    indices = start + source_offsets.astype(np.int32)
+    return np.clip(indices, start, end - 1).astype(np.int32)
+
+
+def _segment_duration_seconds(segments: SegmentTable, segment_idx: int, source_count: int) -> float:
+    duration = 0.0
+    if len(segments.start_times) > segment_idx and len(segments.end_times) > segment_idx:
+        duration = float(segments.end_times[segment_idx] - segments.start_times[segment_idx])
+    if not np.isfinite(duration) or duration <= 0:
+        duration = source_count / max(float(segments.fps), 1e-8)
+    return max(duration, 1.0 / max(float(segments.fps), 1e-8))
+
+
 def write_event_video(
     frames: np.ndarray,
     segments: SegmentTable,
     event_segments: np.ndarray | list[int],
     out_path: str | Path,
     fps: float = 12.0,
+    preserve_timing: bool = True,
+    playback_speed: float = 1.0,
 ) -> Path:
     return write_viewport_video(
         frames,
@@ -152,6 +198,8 @@ def write_event_video(
         out_path,
         fps=fps,
         label_prefix="event",
+        preserve_timing=preserve_timing,
+        playback_speed=playback_speed,
     )
 
 
@@ -161,6 +209,8 @@ def write_summary_video(
     result: SummaryResult,
     out_path: str | Path,
     fps: float = 12.0,
+    preserve_timing: bool = True,
+    playback_speed: float = 1.0,
 ) -> Path:
     return write_viewport_video(
         frames,
@@ -169,6 +219,8 @@ def write_summary_video(
         out_path,
         fps=fps,
         label_prefix=result.method,
+        preserve_timing=preserve_timing,
+        playback_speed=playback_speed,
     )
 
 
@@ -179,6 +231,8 @@ def write_storyboard_video(
     result: SummaryResult,
     out_path: str | Path,
     fps: float = 8.0,
+    max_frames: int = 72,
+    preview_width: int = 640,
 ) -> Path:
     out = Path(out_path)
     if out.suffix.lower() != ".gif":
@@ -186,17 +240,34 @@ def write_storyboard_video(
     out.parent.mkdir(parents=True, exist_ok=True)
     rendered_frames: list[Image.Image] = []
     selected = set(int(item) for item in result.selected)
+    selected_frames: list[tuple[int, int]] = []
     for segment_idx in sorted(selected):
         start = int(segments.starts[segment_idx])
         end = int(segments.ends[segment_idx])
         for frame_idx in range(start, end):
-            canvas = overlay_heatmap(frames[frame_idx], saliency[frame_idx], alpha=0.28)
-            x1, y1, x2, y2 = viewport_box(canvas.shape, segments.viewport_xy[segment_idx])
-            image = Image.fromarray(canvas)
-            draw = ImageDraw.Draw(image)
-            draw.rectangle((x1, y1, x2, y2), outline=(255, 255, 255), width=2)
-            draw.text((10, 8), f"{result.method} | seg {segment_idx}", fill=(255, 255, 255))
-            rendered_frames.append(image)
+            selected_frames.append((segment_idx, frame_idx))
+
+    if len(selected_frames) > max_frames:
+        chosen = np.linspace(0, len(selected_frames) - 1, max_frames, dtype=int)
+        selected_frames = [selected_frames[int(index)] for index in chosen]
+
+    for segment_idx, frame_idx in selected_frames:
+        canvas = overlay_heatmap(frames[frame_idx], saliency[frame_idx], alpha=0.28)
+        x1, y1, x2, y2 = viewport_box(canvas.shape, segments.viewport_xy[segment_idx])
+        image = Image.fromarray(canvas)
+        if image.width > preview_width:
+            preview_height = int(image.height * preview_width / image.width)
+            image = image.resize((preview_width, preview_height), Image.Resampling.BICUBIC)
+            scale_x = image.width / canvas.shape[1]
+            scale_y = image.height / canvas.shape[0]
+            x1 = int(round(x1 * scale_x))
+            x2 = int(round(x2 * scale_x))
+            y1 = int(round(y1 * scale_y))
+            y2 = int(round(y2 * scale_y))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((x1, y1, x2, y2), outline=(255, 255, 255), width=2)
+        draw.text((10, 8), f"{result.method} | seg {segment_idx}", fill=(255, 255, 255))
+        rendered_frames.append(image)
 
     if not rendered_frames:
         raise ValueError("No frames were selected for storyboard export.")
