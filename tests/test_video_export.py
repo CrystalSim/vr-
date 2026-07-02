@@ -1,4 +1,5 @@
 import numpy as np
+import imageio.v2 as imageio
 
 from s3_360.data import generate_demo_video
 from s3_360.methods import summarize_all
@@ -31,3 +32,16 @@ def test_viewport_video_exports(tmp_path) -> None:
     assert summary_path.exists()
     assert event_path.stat().st_size > 0
     assert summary_path.stat().st_size > 0
+
+    event_reader = imageio.get_reader(event_path)
+    summary_reader = imageio.get_reader(summary_path)
+    try:
+        event_frame = event_reader.get_data(0)
+        summary_frame = summary_reader.get_data(0)
+    finally:
+        event_reader.close()
+        summary_reader.close()
+
+    assert video.frames.shape[1:3] == (48, 96)
+    assert event_frame.shape[:2] == (360, 640)
+    assert summary_frame.shape[:2] == (360, 640)

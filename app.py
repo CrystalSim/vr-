@@ -422,11 +422,17 @@ def method_slug(name: str) -> str:
 
 
 def download_video_button(path: Path, label: str) -> None:
+    mime_by_suffix = {
+        ".gif": "image/gif",
+        ".mp4": "video/mp4",
+        ".m4v": "video/mp4",
+        ".mov": "video/quicktime",
+    }
     st.download_button(
         label,
         data=path.read_bytes(),
         file_name=path.name,
-        mime="video/mp4",
+        mime=mime_by_suffix.get(path.suffix.lower(), "application/octet-stream"),
         width="stretch",
     )
 
@@ -2211,8 +2217,11 @@ safe_video_name = video.name.lower().replace(" ", "_").replace("/", "_")
 safe_method_name = method_slug(method_name)
 original_out = Path("outputs/demo") / f"{safe_video_name}_original.gif"
 summary_gif_out = Path("outputs/demo") / f"{safe_video_name}_{safe_method_name}_summary.gif"
+event_segments = event_segment_indices(segments)
+event_mp4_out = Path("outputs/demo") / f"{safe_video_name}_step2_2d_event_video.mp4"
+summary_mp4_out = Path("outputs/demo") / f"{safe_video_name}_step3_{safe_method_name}_2d_summary.mp4"
 
-with st.spinner("正在生成原始视频和摘要视频预览..."):
+with st.spinner("正在生成 2D event video、最终短 2D 视频和解释用预览..."):
     original_gif = write_original_preview_video(video.frames, original_out)
     summary_gif = write_storyboard_video(
         video.frames,
@@ -2221,11 +2230,24 @@ with st.spinner("正在生成原始视频和摘要视频预览..."):
         result,
         summary_gif_out,
     )
+    event_mp4 = write_event_video(
+        video.frames,
+        segments,
+        event_segments,
+        event_mp4_out,
+        fps=8.0,
+    )
+    summary_mp4 = write_summary_video(
+        video.frames,
+        segments,
+        result,
+        summary_mp4_out,
+        fps=8.0,
+    )
 
 frame_idx = st.slider("展示帧", 0, video.num_frames - 1, int(video.num_frames * 0.45))
 segment_idx = min(frame_idx // segment_size, segments.num_segments - 1)
 frame = video.frames[frame_idx] if video.frames is not None else fallback_frame(video)
-event_segments = event_segment_indices(segments)
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
 st.subheader("Step 1. Saliency Maps（中间输出 1）")
@@ -2279,16 +2301,9 @@ with event_cols[1]:
         hide_index=True,
     )
 
-if st.button("生成 Step 2 的 2D Event Video（MP4）", width="stretch"):
-    event_out = write_event_video(
-        video.frames,
-        segments,
-        event_segments,
-        Path("outputs") / "step2_2d_event_video.mp4",
-        fps=8.0,
-    )
-    st.video(str(event_out))
-    download_video_button(event_out, "下载 2D Event Video")
+st.markdown('<div class="story-label">Step 2 自动导出的 2D Event Video</div>', unsafe_allow_html=True)
+st.video(str(event_mp4))
+download_video_button(event_mp4, "下载 2D Event Video（MP4）")
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
 st.subheader("Extension. 摘要关键帧 360°/VR 巡航")
@@ -2320,39 +2335,32 @@ st.markdown(
 )
 overview_cols = st.columns(2)
 with overview_cols[0]:
-    st.markdown('<div class="story-label">原始 360°视频预览</div>', unsafe_allow_html=True)
-    st.image(str(original_gif), width="stretch")
+    st.markdown('<div class="story-label">最终短 2D Summary Video</div>', unsafe_allow_html=True)
+    st.video(str(summary_mp4))
+    download_video_button(summary_mp4, "下载最终短 2D 视频（MP4）")
 with overview_cols[1]:
-    st.markdown('<div class="story-label">S3-360-Guide 摘要预览</div>', unsafe_allow_html=True)
-    st.image(str(summary_gif), width="stretch")
+    st.markdown('<div class="story-label">原始 360°视频预览（对照）</div>', unsafe_allow_html=True)
+    st.image(str(original_gif), width="stretch")
 
 previews = segment_previews(video, segments, result)
-if previews:
-    preview_cols = st.columns(min(len(previews), 4))
-    for idx, (selected_segment, image) in enumerate(previews):
-        with preview_cols[idx % len(preview_cols)]:
-            st.image(
-                image,
-                caption=f"片段 {selected_segment} | {segment_time_label(segments, selected_segment)}",
-                width="stretch",
-            )
-else:
-    st.info("当前数据没有 frames 字段，无法显示缩略图。")
-
-final_cols = st.columns(2)
-with final_cols[0]:
-    if st.button("生成最终短 2D Summary Video（MP4）", width="stretch"):
-        summary_mp4_out = write_summary_video(
-            video.frames,
-            segments,
-            result,
-            Path("outputs") / f"step3_{method_slug(method_name)}_summary.mp4",
-            fps=8.0,
-        )
-        st.video(str(summary_mp4_out))
-        download_video_button(summary_mp4_out, "下载最终短视频")
-with final_cols[1]:
+with st.expander("查看解释用 Storyboard GIF 与摘要片段缩略图"):
+    st.caption(
+        "这里保留的是 ERP 全景画面 + 热力图 + 白色推荐视角框，用来解释系统为什么选这些片段、建议看哪里；"
+        "它不是最终 2D 输出。最终 2D 输出以上方 MP4 为准。"
+    )
+    st.image(str(summary_gif), caption="解释用 Storyboard GIF：保留 360° ERP 全景以展示热力图和推荐视角框。", width="stretch")
     download_video_button(summary_gif, "下载 Storyboard GIF")
+    if previews:
+        preview_cols = st.columns(min(len(previews), 4))
+        for idx, (selected_segment, image) in enumerate(previews):
+            with preview_cols[idx % len(preview_cols)]:
+                st.image(
+                    image,
+                    caption=f"片段 {selected_segment} | {segment_time_label(segments, selected_segment)}",
+                    width="stretch",
+                )
+    else:
+        st.info("当前数据没有 frames 字段，无法显示缩略图。")
 
 with st.expander("查看最终导览片段明细"):
     st.dataframe(tour_point_table(tour_points), width="stretch", hide_index=True)
@@ -2360,7 +2368,7 @@ with st.expander("查看最终导览片段明细"):
 with st.expander("系统解释"):
     st.write(summary_explanation(segments, result, method_name))
     st.write(
-        "摘要视频中的热力颜色表示系统估计的注意力区域，白色框表示推荐观看视角。"
-        "原视频 360°播放器可以像 YouTube 360 一样拖拽观看，并用摘要章节驱动自动导览；"
-        "关键帧 360°/VR 巡航则用于快速检查每个摘要片段的推荐视角。"
+        "最终短 2D 视频已经围绕推荐视角完成裁剪，可以按普通视频直接播放。"
+        "解释用 Storyboard GIF 会保留 ERP 全景、热力颜色和白色推荐视角框，用于说明系统为什么选这些片段、建议看哪里；"
+        "原视频 360°播放器和关键帧 360°/VR 巡航则用于自由探索与推荐视角检查。"
     )
