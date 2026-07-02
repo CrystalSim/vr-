@@ -2029,13 +2029,6 @@ st.caption(
     f"已从整段视频均匀采样 {video.num_frames} 帧，当前时间轴覆盖到约 "
     f"{format_seconds(sampled_duration(video))}；摘要时间均按原视频时间显示。"
 )
-st.info(
-    "当前默认使用场景化的 S3-360-TourGuide：把摘要片段识别为导览点，并生成更适合连续观看的智能导览路线；"
-    "页面聚焦 VR 导览演示，不展示需要 ground truth 支撑的实验指标或方法排名；"
-    "同时包含论文对齐诊断、导览地图、可下载报告、原视频 360°播放器、观看轨迹记录、"
-    "2D event video 导出和最终短 2D 视频导出。"
-    "如果长视频摘要覆盖太少，可以提高左侧“最多采样帧数”。"
-)
 
 route_duration = sum(max(point.end_sec - point.start_sec, 0.0) for point in tour_points)
 overview_metric_cols = st.columns(5)
@@ -2234,15 +2227,6 @@ with lab_cols[1]:
             自由拖拽时绿色点表示当前视角，橙色点表示推荐视角。
             点击 <b>导出 viewing_trace.csv</b> 可以拿到实验数据。
           </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-    st.markdown(
-        """
-        <div class="trace-callout">
-          课堂演示时可以先开启“Σ”摘要巡航，再关闭“◎”自由拖拽，右上角会显示视角误差和轨迹小地图。
         </div>
         """,
         unsafe_allow_html=True,
