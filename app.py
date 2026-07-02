@@ -32,7 +32,7 @@ from s3_360.tourguide import (
     tour_route_metrics,
 )
 from s3_360.tour import analyze_viewing_trace, guide_points_table, identify_guide_points
-from s3_360.video import write_event_video, write_storyboard_video, write_summary_video
+from s3_360.video import perspective_viewport_frame, write_event_video, write_storyboard_video, write_summary_video
 from s3_360.visualization import (
     guide_path_figure,
     overlay_heatmap,
@@ -243,9 +243,7 @@ def guided_frame(video_frame: np.ndarray, saliency: np.ndarray, viewport_xy: np.
 
 
 def viewport_crop(video_frame: np.ndarray, viewport_xy: np.ndarray) -> Image.Image:
-    image = Image.fromarray(video_frame)
-    x1, y1, x2, y2 = viewport_box(video_frame.shape, viewport_xy, box_ratio=(0.28, 0.48))
-    return image.crop((x1, y1, x2, y2)).resize((512, 288), Image.Resampling.BICUBIC)
+    return Image.fromarray(perspective_viewport_frame(video_frame, viewport_xy, output_size=(512, 288)))
 
 
 def segment_previews(video, segments, result, max_items: int = 6) -> list[tuple[int, Image.Image]]:
@@ -2352,7 +2350,7 @@ st.subheader("Step 2. 2D Event Video（中间输出 2）")
 st.markdown(
     """
     <div class="step-band">
-      <strong>处理：</strong>根据显著性区域聚合事件，自动裁剪普通 16:9 视角。<br>
+      <strong>处理：</strong>根据显著性区域聚合事件，并把 360°ERP 全景帧投影成普通 16:9 透视视角。<br>
       <strong>输出：</strong>一个不再是 360°的 2D event video，保留所有检测到的重要事件，但还没有做最终时间摘要。
     </div>
     """,

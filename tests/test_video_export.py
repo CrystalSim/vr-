@@ -4,7 +4,32 @@ import imageio.v2 as imageio
 from s3_360.data import generate_demo_video
 from s3_360.methods import summarize_all
 from s3_360.segmentation import make_segments
-from s3_360.video import write_event_video, write_summary_video
+from s3_360.video import (
+    crop_rectangular_viewport_frame,
+    perspective_viewport_frame,
+    write_event_video,
+    write_summary_video,
+)
+
+
+def test_perspective_viewport_is_not_rectangular_crop() -> None:
+    yy, xx = np.mgrid[0:128, 0:256]
+    frame = np.stack(
+        [
+            (xx % 256).astype(np.uint8),
+            (yy * 2 % 256).astype(np.uint8),
+            ((xx // 2 + yy) % 256).astype(np.uint8),
+        ],
+        axis=2,
+    )
+    viewport = np.asarray([0.63, 0.42], dtype=np.float32)
+
+    perspective = perspective_viewport_frame(frame, viewport, output_size=(160, 90))
+    rectangular = crop_rectangular_viewport_frame(frame, viewport, output_size=(160, 90))
+
+    assert perspective.shape == (90, 160, 3)
+    assert rectangular.shape == (90, 160, 3)
+    assert np.mean(np.abs(perspective.astype(np.float32) - rectangular.astype(np.float32))) > 1.0
 
 
 def test_viewport_video_exports(tmp_path) -> None:

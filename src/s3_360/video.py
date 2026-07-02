@@ -17,6 +17,87 @@ def crop_viewport_frame(
     output_size: tuple[int, int] = (640, 360),
     box_ratio: tuple[float, float] = (0.40, 0.45),
 ) -> np.ndarray:
+    del box_ratio
+    return perspective_viewport_frame(frame, viewport_xy, output_size=output_size)
+
+
+def perspective_viewport_frame(
+    frame: np.ndarray,
+    viewport_xy: np.ndarray,
+    output_size: tuple[int, int] = (640, 360),
+    hfov_deg: float = 72.0,
+) -> np.ndarray:
+    """Render an ordinary perspective viewport from an equirectangular panorama."""
+    height, width = frame.shape[:2]
+    out_width, out_height = output_size
+    yaw, pitch = _viewport_to_radians(viewport_xy)
+    pitch = float(np.clip(pitch, np.deg2rad(-82.0), np.deg2rad(82.0)))
+
+    hfov = np.deg2rad(hfov_deg)
+    aspect = out_width / max(out_height, 1)
+    vfov = 2.0 * np.arctan(np.tan(hfov / 2.0) / aspect)
+
+    x_ndc = (np.arange(out_width, dtype=np.float32) + 0.5) / out_width * 2.0 - 1.0
+    y_ndc = 1.0 - (np.arange(out_height, dtype=np.float32) + 0.5) / out_height * 2.0
+    ray_x = x_ndc * np.tan(hfov / 2.0)
+    ray_y = y_ndc * np.tan(vfov / 2.0)
+    camera_x, camera_y = np.meshgrid(ray_x, ray_y)
+
+    forward = np.asarray(
+        [np.cos(pitch) * np.sin(yaw), np.sin(pitch), np.cos(pitch) * np.cos(yaw)],
+        dtype=np.float32,
+    )
+    right = np.asarray([np.cos(yaw), 0.0, -np.sin(yaw)], dtype=np.float32)
+    up = np.cross(forward, right).astype(np.float32)
+    up /= max(float(np.linalg.norm(up)), 1e-8)
+
+    rays = (
+        forward[None, None, :]
+        + camera_x[..., None] * right[None, None, :]
+        + camera_y[..., None] * up[None, None, :]
+    )
+    rays /= np.maximum(np.linalg.norm(rays, axis=2, keepdims=True), 1e-8)
+
+    lon = np.arctan2(rays[..., 0], rays[..., 2])
+    lat = np.arcsin(np.clip(rays[..., 1], -1.0, 1.0))
+    src_x = ((lon / (2.0 * np.pi)) + 0.5) * (width - 1)
+    src_y = (0.5 - lat / np.pi) * (height - 1)
+
+    return _bilinear_sample(frame, src_x, src_y)
+
+
+def _bilinear_sample(frame: np.ndarray, src_x: np.ndarray, src_y: np.ndarray) -> np.ndarray:
+    height, width = frame.shape[:2]
+    src_x = np.mod(src_x, width)
+    src_y = np.clip(src_y, 0.0, height - 1.0)
+
+    x0 = np.floor(src_x).astype(np.int32)
+    y0 = np.floor(src_y).astype(np.int32)
+    x1 = (x0 + 1) % width
+    y1 = np.minimum(y0 + 1, height - 1)
+    wx = (src_x - x0)[..., None]
+    wy = (src_y - y0)[..., None]
+
+    frame_f = frame.astype(np.float32)
+    top = frame_f[y0, x0] * (1.0 - wx) + frame_f[y0, x1] * wx
+    bottom = frame_f[y1, x0] * (1.0 - wx) + frame_f[y1, x1] * wx
+    sampled = top * (1.0 - wy) + bottom * wy
+    return np.clip(sampled, 0, 255).astype(np.uint8)
+
+
+def _viewport_to_radians(viewport_xy: np.ndarray) -> tuple[float, float]:
+    viewport_xy = np.asarray(viewport_xy, dtype=np.float32)
+    yaw = (float(viewport_xy[0]) - 0.5) * 2.0 * np.pi
+    pitch = (0.5 - float(viewport_xy[1])) * np.pi
+    return yaw, pitch
+
+
+def crop_rectangular_viewport_frame(
+    frame: np.ndarray,
+    viewport_xy: np.ndarray,
+    output_size: tuple[int, int] = (640, 360),
+    box_ratio: tuple[float, float] = (0.40, 0.45),
+) -> np.ndarray:
     image = Image.fromarray(frame)
     x1, y1, x2, y2 = viewport_box(frame.shape, viewport_xy, box_ratio=box_ratio)
     cropped = image.crop((x1, y1, x2, y2)).resize(output_size, Image.Resampling.BICUBIC)
