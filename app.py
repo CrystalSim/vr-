@@ -2013,126 +2013,126 @@ st.markdown(
     f'<div class="source-line">当前样本：<b>{source_text}</b>{note_text}</div>',
     unsafe_allow_html=True,
 )
-st.markdown(
-    """
-    <span class="flow-chip">Step 1: Saliency Maps</span>
-    <span class="flow-chip">Step 2: 2D Event Video</span>
-    <span class="flow-chip">Scenario: S3-360-TourGuide</span>
-    <span class="flow-chip">Step 3: S3-360-TourGuide Route</span>
-    <span class="flow-chip">Paper Alignment</span>
-    <span class="flow-chip">Extension: YouTube-style 360 Player</span>
-    <span class="flow-chip">Extension: Viewing Trace & Comfort</span>
-    """,
-    unsafe_allow_html=True,
-)
+# st.markdown(
+#     """
+#     <span class="flow-chip">Step 1: Saliency Maps</span>
+#     <span class="flow-chip">Step 2: 2D Event Video</span>
+#     <span class="flow-chip">Scenario: S3-360-TourGuide</span>
+#     <span class="flow-chip">Step 3: S3-360-TourGuide Route</span>
+#     <span class="flow-chip">Paper Alignment</span>
+#     <span class="flow-chip">Extension: YouTube-style 360 Player</span>
+#     <span class="flow-chip">Extension: Viewing Trace & Comfort</span>
+#     """,
+#     unsafe_allow_html=True,
+# )
 st.caption(
     f"已从整段视频均匀采样 {video.num_frames} 帧，当前时间轴覆盖到约 "
     f"{format_seconds(sampled_duration(video))}；摘要时间均按原视频时间显示。"
 )
-st.info(
-    "当前默认使用场景化的 S3-360-TourGuide：把摘要片段识别为导览点，并生成更适合连续观看的智能导览路线；"
-    "页面聚焦 VR 导览演示，不展示需要 ground truth 支撑的实验指标或方法排名；"
-    "同时包含论文对齐诊断、导览地图、可下载报告、原视频 360°播放器、观看轨迹记录、"
-    "2D event video 导出和最终短 2D 视频导出。"
-    "如果长视频摘要覆盖太少，可以提高左侧“最多采样帧数”。"
-)
+# st.info(
+#     "当前默认使用场景化的 S3-360-TourGuide：把摘要片段识别为导览点，并生成更适合连续观看的智能导览路线；"
+#     "页面聚焦 VR 导览演示，不展示需要 ground truth 支撑的实验指标或方法排名；"
+#     "同时包含论文对齐诊断、导览地图、可下载报告、原视频 360°播放器、观看轨迹记录、"
+#     "2D event video 导出和最终短 2D 视频导出。"
+#     "如果长视频摘要覆盖太少，可以提高左侧“最多采样帧数”。"
+# )
 
 route_duration = sum(max(point.end_sec - point.start_sec, 0.0) for point in tour_points)
-overview_metric_cols = st.columns(5)
+overview_metric_cols = st.columns(3)
 overview_metric_cols[0].metric("视频覆盖时长", format_seconds(sampled_duration(video)))
 overview_metric_cols[1].metric("导览点", str(len(tour_points)))
 overview_metric_cols[2].metric("导览路线时长", format_seconds(route_duration))
-overview_metric_cols[3].metric("平均转向角", f"{route_metrics['guide_avg_angle_deg']:.1f}°")
-overview_metric_cols[4].metric("最大转向角", f"{route_metrics['guide_max_angle_deg']:.1f}°")
+# overview_metric_cols[3].metric("平均转向角", f"{route_metrics['guide_avg_angle_deg']:.1f}°")
+# overview_metric_cols[4].metric("最大转向角", f"{route_metrics['guide_max_angle_deg']:.1f}°")
+
+# st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+# st.subheader("Scenario. S3-360-TourGuide 场景化导览路线")
+# st.markdown(
+#     f"""
+#     <div class="step-band">
+#       <strong>面向场景：</strong>{tour_scenario}。系统把普通“摘要片段”进一步解释为
+#       <strong>导览点</strong>，并生成推荐观看方向、路线地图、转向舒适度和可下载导览报告。
+#       这层用于回答“看哪一段”之外的两个问题：<strong>在 360°画面里看哪里</strong>、
+#       <strong>这条导览路线是否适合连续观看</strong>。
+#     </div>
+#     """,
+#     unsafe_allow_html=True,
+# )
+
+# tour_metric_cols = st.columns(4)
+# tour_metric_cols[0].metric("导览点数量", str(len(tour_points)))
+# tour_metric_cols[1].metric("路线时长", format_seconds(route_duration))
+# tour_metric_cols[2].metric("平均转向", f"{route_metrics['guide_avg_angle_deg']:.1f}°")
+# tour_metric_cols[3].metric("最大转向", f"{route_metrics['guide_max_angle_deg']:.1f}°")
+
+# tour_cols = st.columns([1.25, 0.75])
+# with tour_cols[0]:
+#     st.image(
+#         tour_route_map_image(video, tour_points),
+#         caption="导览地图：编号点是导览点，箭头表示推荐观看顺序；绿色/黄色/红色表示转向是否平滑。",
+#         width="stretch",
+#     )
+# with tour_cols[1]:
+#     st.markdown(
+#         f"""
+#         <div class="tour-summary">
+#           <strong>导览解释</strong><br>
+#           当前路线从 {len(tour_points)} 个导览点中组织摘要，
+#           平均转向角为 {route_metrics['guide_avg_angle_deg']:.1f}°，
+#           最大转向角为 {route_metrics['guide_max_angle_deg']:.1f}°。
+#           导览报告会记录每个导览点的时间段、推荐 yaw/pitch、转向角和舒适状态。
+#         </div>
+#         """,
+#         unsafe_allow_html=True,
+#     )
+#     if map_reference_url:
+#         st.link_button("打开外部地图参考", map_reference_url, width="stretch")
+#     else:
+#         st.caption("可以在左侧填入 OpenStreetMap、校园地图或展馆平面图链接，用于答辩时对照路线。")
+
+# report_md = tour_report_markdown(
+#     video_name=active_video_name,
+#     source=source_text,
+#     sampled_duration_sec=sampled_duration(video),
+#     method_name="S3-360-TourGuide",
+#     points=tour_points,
+#     route_metrics=route_metrics,
+#     map_reference_url=map_reference_url,
+# )
+# report_json = tour_report_json(
+#     video_name=active_video_name,
+#     source=source_text,
+#     sampled_duration_sec=sampled_duration(video),
+#     method_name="S3-360-TourGuide",
+#     points=tour_points,
+#     route_metrics=route_metrics,
+#     map_reference_url=map_reference_url,
+# )
+# download_cols = st.columns(2)
+# download_cols[0].download_button(
+#     "下载导览说明（Markdown）",
+#     data=report_md,
+#     file_name="s3_360_tourguide_report.md",
+#     mime="text/markdown",
+#     width="stretch",
+# )
+# download_cols[1].download_button(
+#     "下载导览点数据（JSON）",
+#     data=report_json,
+#     file_name="s3_360_tourguide_data.json",
+#     mime="application/json",
+#     width="stretch",
+# )
+# with st.expander("查看导览点路线表"):
+    # st.dataframe(tour_point_table(tour_points), width="stretch", hide_index=True)
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("Scenario. S3-360-TourGuide 场景化导览路线")
-st.markdown(
-    f"""
-    <div class="step-band">
-      <strong>面向场景：</strong>{tour_scenario}。系统把普通“摘要片段”进一步解释为
-      <strong>导览点</strong>，并生成推荐观看方向、路线地图、转向舒适度和可下载导览报告。
-      这层用于回答“看哪一段”之外的两个问题：<strong>在 360°画面里看哪里</strong>、
-      <strong>这条导览路线是否适合连续观看</strong>。
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-tour_metric_cols = st.columns(4)
-tour_metric_cols[0].metric("导览点数量", str(len(tour_points)))
-tour_metric_cols[1].metric("路线时长", format_seconds(route_duration))
-tour_metric_cols[2].metric("平均转向", f"{route_metrics['guide_avg_angle_deg']:.1f}°")
-tour_metric_cols[3].metric("最大转向", f"{route_metrics['guide_max_angle_deg']:.1f}°")
-
-tour_cols = st.columns([1.25, 0.75])
-with tour_cols[0]:
-    st.image(
-        tour_route_map_image(video, tour_points),
-        caption="导览地图：编号点是导览点，箭头表示推荐观看顺序；绿色/黄色/红色表示转向是否平滑。",
-        width="stretch",
-    )
-with tour_cols[1]:
-    st.markdown(
-        f"""
-        <div class="tour-summary">
-          <strong>导览解释</strong><br>
-          当前路线从 {len(tour_points)} 个导览点中组织摘要，
-          平均转向角为 {route_metrics['guide_avg_angle_deg']:.1f}°，
-          最大转向角为 {route_metrics['guide_max_angle_deg']:.1f}°。
-          导览报告会记录每个导览点的时间段、推荐 yaw/pitch、转向角和舒适状态。
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    if map_reference_url:
-        st.link_button("打开外部地图参考", map_reference_url, width="stretch")
-    else:
-        st.caption("可以在左侧填入 OpenStreetMap、校园地图或展馆平面图链接，用于答辩时对照路线。")
-
-report_md = tour_report_markdown(
-    video_name=active_video_name,
-    source=source_text,
-    sampled_duration_sec=sampled_duration(video),
-    method_name="S3-360-TourGuide",
-    points=tour_points,
-    route_metrics=route_metrics,
-    map_reference_url=map_reference_url,
-)
-report_json = tour_report_json(
-    video_name=active_video_name,
-    source=source_text,
-    sampled_duration_sec=sampled_duration(video),
-    method_name="S3-360-TourGuide",
-    points=tour_points,
-    route_metrics=route_metrics,
-    map_reference_url=map_reference_url,
-)
-download_cols = st.columns(2)
-download_cols[0].download_button(
-    "下载导览说明（Markdown）",
-    data=report_md,
-    file_name="s3_360_tourguide_report.md",
-    mime="text/markdown",
-    width="stretch",
-)
-download_cols[1].download_button(
-    "下载导览点数据（JSON）",
-    data=report_json,
-    file_name="s3_360_tourguide_data.json",
-    mime="application/json",
-    width="stretch",
-)
-with st.expander("查看导览点路线表"):
-    st.dataframe(tour_point_table(tour_points), width="stretch", hide_index=True)
-
-st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("Paper Alignment. 相机运动与事件子体诊断")
+st.subheader("静态/运动相机拍摄场景判定")
 st.markdown(
     """
     <div class="step-band">
-      <strong>论文对应：</strong>原论文先判断 360°视频由静态相机还是运动相机拍摄，再选择更合适的 saliency 方法；
-      随后把高显著区域跨时间聚合成 spatio-temporal sub-volume。这里给出一个轻量可解释实现。
+      先判断 360°视频由静态相机还是运动相机拍摄，再选择更合适的模型；
+      随后把高显著区域跨时间聚合成 spatio-temporal sub-volume。
     </div>
     """,
     unsafe_allow_html=True,
@@ -2158,13 +2158,12 @@ with st.expander("查看 event sub-volume 明细"):
         st.info("当前视频没有形成稳定的高显著事件子体。")
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("YouTube-style 360° 原视频播放器")
+st.subheader("360° VR视频播放与智能导览")
 st.markdown(
     """
     <div class="step-band">
-      <strong>新增体验：</strong>直接播放上传的原始 360°视频，可拖拽视角、滚轮缩放、全屏观看；
+      播放 360°视频，可拖拽视角、滚轮缩放、全屏观看；
       摘要算法选中的片段会显示为章节，开启“Σ”后可只巡航最终摘要片段，开启“◎”后会自动贴合推荐视角。
-      播放器会记录浏览器内观看轨迹，并可导出 CSV 用于实验分析。
     </div>
     """,
     unsafe_allow_html=True,
@@ -2181,147 +2180,147 @@ components.html(
     height=660,
 )
 
-st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("Extension. VR Guide Lab（导览展示页）")
-st.markdown(
-    """
-    <div class="step-band">
-      <strong>扩展实验：</strong>系统先识别关键导览点，再把导览点组织成一条可展示的 360°智能导览路线，并在播放器中记录用户观看轨迹。
-      这部分用于说明系统不仅能选片段，还能评价“看哪里、怎么引导、看得是否平滑”。
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-avg_turn = float(route_metrics["guide_avg_angle_deg"])
-max_turn = float(route_metrics["guide_max_angle_deg"])
-if max_turn <= 35:
-    comfort_label, comfort_class = "平滑", ""
-elif max_turn <= 70:
-    comfort_label, comfort_class = "需要轻微转向", "warn"
-else:
-    comfort_label, comfort_class = "转向较大", "risk"
+# st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+# st.subheader("Extension. VR Guide Lab（导览展示页）")
+# st.markdown(
+#     """
+#     <div class="step-band">
+#       <strong>扩展实验：</strong>系统先识别关键导览点，再把导览点组织成一条可展示的 360°智能导览路线，并在播放器中记录用户观看轨迹。
+#       这部分用于说明系统不仅能选片段，还能评价“看哪里、怎么引导、看得是否平滑”。
+#     </div>
+#     """,
+#     unsafe_allow_html=True,
+# )
+# avg_turn = float(route_metrics["guide_avg_angle_deg"])
+# max_turn = float(route_metrics["guide_max_angle_deg"])
+# if max_turn <= 35:
+#     comfort_label, comfort_class = "平滑", ""
+# elif max_turn <= 70:
+#     comfort_label, comfort_class = "需要轻微转向", "warn"
+# else:
+#     comfort_label, comfort_class = "转向较大", "risk"
 
-lab_cols = st.columns([1.35, 0.85])
-with lab_cols[0]:
-    map_tab, pano_tab, erp_tab = st.tabs(["导览地图", "全景路线", "转向诊断"])
-    with map_tab:
-        st.image(
-            tour_map_image(guide_points),
-            caption="导览地图式展示：GP 表示导览点，箭头表示推荐游览顺序，适合答辩快速说明系统路线规划结果。",
-            width="stretch",
-        )
-    with pano_tab:
-        st.image(
-            guide_overview_image(video, segments, result, guide_points),
-            caption="全景路线：导览点投影到 ERP 全景图上，展示系统建议用户在 360°画面中看向哪里。",
-            width="stretch",
-        )
-    with erp_tab:
-        st.image(
-            tour_route_map_image(video, tour_points),
-            caption="ERP 转向诊断：绿色/黄色/红色表示相邻导览点之间的转向舒适状态。",
-            width="stretch",
-        )
-with lab_cols[1]:
-    st.markdown(
-        f"""
-        <div class="demo-panel">
-          <span class="status-pill {comfort_class}">转向状态：{comfort_label}</span>
-          <div style="height:0.75rem"></div>
-          <strong>展示重点</strong>
-          <div style="margin-top:0.45rem;color:#334155;line-height:1.55">
-            播放器右上角的 <b>REC 观看轨迹</b> 会实时累计样本；
-            自由拖拽时绿色点表示当前视角，橙色点表示推荐视角。
-            点击 <b>导出 viewing_trace.csv</b> 可以拿到实验数据。
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-    st.markdown(
-        """
-        <div class="trace-callout">
-          课堂演示时可以先开启“Σ”摘要巡航，再关闭“◎”自由拖拽，右上角会显示视角误差和轨迹小地图。
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+# lab_cols = st.columns([1.35, 0.85])
+# with lab_cols[0]:
+#     map_tab, pano_tab, erp_tab = st.tabs(["导览地图", "全景路线", "转向诊断"])
+#     with map_tab:
+#         st.image(
+#             tour_map_image(guide_points),
+#             caption="导览地图式展示：GP 表示导览点，箭头表示推荐游览顺序，适合答辩快速说明系统路线规划结果。",
+#             width="stretch",
+#         )
+#     with pano_tab:
+#         st.image(
+#             guide_overview_image(video, segments, result, guide_points),
+#             caption="全景路线：导览点投影到 ERP 全景图上，展示系统建议用户在 360°画面中看向哪里。",
+#             width="stretch",
+#         )
+#     with erp_tab:
+#         st.image(
+#             tour_route_map_image(video, tour_points),
+#             caption="ERP 转向诊断：绿色/黄色/红色表示相邻导览点之间的转向舒适状态。",
+#             width="stretch",
+#         )
+# with lab_cols[1]:
+#     st.markdown(
+#         f"""
+#         <div class="demo-panel">
+#           <span class="status-pill {comfort_class}">转向状态：{comfort_label}</span>
+#           <div style="height:0.75rem"></div>
+#           <strong>展示重点</strong>
+#           <div style="margin-top:0.45rem;color:#334155;line-height:1.55">
+#             播放器右上角的 <b>REC 观看轨迹</b> 会实时累计样本；
+#             自由拖拽时绿色点表示当前视角，橙色点表示推荐视角。
+#             点击 <b>导出 viewing_trace.csv</b> 可以拿到实验数据。
+#           </div>
+#         </div>
+#         """,
+#         unsafe_allow_html=True,
+#     )
+#     st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+#     st.markdown(
+#         """
+#         <div class="trace-callout">
+#           课堂演示时可以先开启“Σ”摘要巡航，再关闭“◎”自由拖拽，右上角会显示视角误差和轨迹小地图。
+#         </div>
+#         """,
+#         unsafe_allow_html=True,
+#     )
 
-guide_cols = st.columns(4)
-guide_cols[0].metric("导览点", str(len(guide_points)))
-guide_cols[1].metric("平均转向", f"{avg_turn:.1f}°")
-guide_cols[2].metric("最大转向", f"{max_turn:.1f}°")
-guide_cols[3].metric("路线状态", comfort_label)
+# guide_cols = st.columns(4)
+# guide_cols[0].metric("导览点", str(len(guide_points)))
+# guide_cols[1].metric("平均转向", f"{avg_turn:.1f}°")
+# guide_cols[2].metric("最大转向", f"{max_turn:.1f}°")
+# guide_cols[3].metric("路线状态", comfort_label)
 
-st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.markdown('<div class="story-label">5.4 用户观看轨迹分析</div>', unsafe_allow_html=True)
-trace_cols = st.columns([0.9, 1.1])
-with trace_cols[0]:
-    trace_upload = st.file_uploader(
-        "上传播放器导出的 viewing_trace.csv",
-        type=["csv"],
-        key="viewing_trace_upload",
-    )
-    st.caption("先在播放器右上角点击“导出 viewing_trace.csv”，再把 CSV 上传到这里即可分析用户是否跟随推荐视角。")
+# st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+# st.markdown('<div class="story-label">5.4 用户观看轨迹分析</div>', unsafe_allow_html=True)
+# trace_cols = st.columns([0.9, 1.1])
+# with trace_cols[0]:
+#     trace_upload = st.file_uploader(
+#         "上传播放器导出的 viewing_trace.csv",
+#         type=["csv"],
+#         key="viewing_trace_upload",
+#     )
+#     st.caption("先在播放器右上角点击“导出 viewing_trace.csv”，再把 CSV 上传到这里即可分析用户是否跟随推荐视角。")
 
-trace_summary = None
-trace_by_point = pd.DataFrame()
-if trace_upload is not None:
-    try:
-        trace_df = pd.read_csv(trace_upload)
-        trace_summary, trace_by_point = analyze_viewing_trace(trace_df, guide_points)
-    except Exception as exc:
-        st.warning(f"观看轨迹 CSV 解析失败：{exc}")
+# trace_summary = None
+# trace_by_point = pd.DataFrame()
+# if trace_upload is not None:
+#     try:
+#         trace_df = pd.read_csv(trace_upload)
+#         trace_summary, trace_by_point = analyze_viewing_trace(trace_df, guide_points)
+#     except Exception as exc:
+#         st.warning(f"观看轨迹 CSV 解析失败：{exc}")
 
-with trace_cols[1]:
-    if trace_summary:
-        hit_samples = round(float(trace_summary["hit_rate"]) * int(trace_summary["samples"]))
-        followed_samples = round(float(trace_summary["follow_rate"]) * int(trace_summary["samples"]))
-        trace_metric_cols = st.columns(4)
-        trace_metric_cols[0].metric("轨迹样本", f"{int(trace_summary['samples'])}")
-        trace_metric_cols[1].metric("平均误差", f"{float(trace_summary['mean_error_deg']):.1f}°")
-        trace_metric_cols[2].metric("看向推荐区", f"{hit_samples} 帧")
-        trace_metric_cols[3].metric("处于导览段", f"{followed_samples} 帧")
-        st.markdown(
-            f"""
-            <div class="trace-callout">
-              偏离最明显导览点：<b>{trace_summary['worst_point']}</b>。
-              “看向推荐区”按视角误差不超过 25° 统计。
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            """
-            <div class="trace-callout">
-              这里用于回放分析用户观看行为：上传 CSV 后会显示平均视角误差、看向推荐区域的样本数、处于导览段的样本数和偏离最明显的导览点。
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+# with trace_cols[1]:
+#     if trace_summary:
+#         hit_samples = round(float(trace_summary["hit_rate"]) * int(trace_summary["samples"]))
+#         followed_samples = round(float(trace_summary["follow_rate"]) * int(trace_summary["samples"]))
+#         trace_metric_cols = st.columns(4)
+#         trace_metric_cols[0].metric("轨迹样本", f"{int(trace_summary['samples'])}")
+#         trace_metric_cols[1].metric("平均误差", f"{float(trace_summary['mean_error_deg']):.1f}°")
+#         trace_metric_cols[2].metric("看向推荐区", f"{hit_samples} 帧")
+#         trace_metric_cols[3].metric("处于导览段", f"{followed_samples} 帧")
+#         st.markdown(
+#             f"""
+#             <div class="trace-callout">
+#               偏离最明显导览点：<b>{trace_summary['worst_point']}</b>。
+#               “看向推荐区”按视角误差不超过 25° 统计。
+#             </div>
+#             """,
+#             unsafe_allow_html=True,
+#         )
+#     else:
+#         st.markdown(
+#             """
+#             <div class="trace-callout">
+#               这里用于回放分析用户观看行为：上传 CSV 后会显示平均视角误差、看向推荐区域的样本数、处于导览段的样本数和偏离最明显的导览点。
+#             </div>
+#             """,
+#             unsafe_allow_html=True,
+#         )
 
-if not trace_by_point.empty:
-    st.dataframe(trace_by_point, width="stretch", hide_index=True)
+# if not trace_by_point.empty:
+#     st.dataframe(trace_by_point, width="stretch", hide_index=True)
 
-story_items = segment_previews(video, segments, result, max_items=4)
-if story_items:
-    st.markdown('<div class="story-label">导览点缩略图</div>', unsafe_allow_html=True)
-    story_cols = st.columns(len(story_items))
-    point_by_segment = {point.segment: point for point in guide_points}
-    for col, (selected_segment, image) in zip(story_cols, story_items, strict=True):
-        point = point_by_segment.get(selected_segment)
-        with col:
-            st.image(
-                image,
-                caption=(
-                    f"{point.name} · {point.time_label}"
-                    if point is not None
-                    else f"S{selected_segment} · {segment_time_label(segments, selected_segment)}"
-                ),
-                width="stretch",
-            )
+# story_items = segment_previews(video, segments, result, max_items=4)
+# if story_items:
+#     st.markdown('<div class="story-label">导览点缩略图</div>', unsafe_allow_html=True)
+#     story_cols = st.columns(len(story_items))
+#     point_by_segment = {point.segment: point for point in guide_points}
+#     for col, (selected_segment, image) in zip(story_cols, story_items, strict=True):
+#         point = point_by_segment.get(selected_segment)
+#         with col:
+#             st.image(
+#                 image,
+#                 caption=(
+#                     f"{point.name} · {point.time_label}"
+#                     if point is not None
+#                     else f"S{selected_segment} · {segment_time_label(segments, selected_segment)}"
+#                 ),
+#                 width="stretch",
+#             )
 
 with st.expander("导览点识别结果与路线技术细节"):
     st.dataframe(guide_points_table(guide_points), width="stretch", hide_index=True)
@@ -2384,7 +2383,7 @@ segment_idx = min(frame_idx // segment_size, segments.num_segments - 1)
 frame = video.frames[frame_idx] if video.frames is not None else fallback_frame(video)
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("Step 1. Saliency Maps（中间输出 1）")
+st.subheader("显著性热力图逐帧分析")
 st.markdown(
     """
     <div class="step-band">
@@ -2409,7 +2408,7 @@ with guide_col:
     )
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("Step 2. 2D Event Video（中间输出 2）")
+st.subheader("显著事件检测与2D视频制作")
 st.markdown(
     """
     <div class="step-band">
@@ -2435,12 +2434,12 @@ with event_cols[1]:
         hide_index=True,
     )
 
-st.markdown('<div class="story-label">Step 2 自动导出的 2D Event Video</div>', unsafe_allow_html=True)
+st.markdown('<div class="story-label">导出的 2D 事件视频</div>', unsafe_allow_html=True)
 st.video(str(event_mp4))
-download_video_button(event_mp4, "下载 2D Event Video（MP4）")
+download_video_button(event_mp4, "下载 2D 事件视频（MP4）")
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("Extension. 摘要关键帧 360°/VR 巡航")
+st.subheader("360° VR 智能导览巡航效果")
 st.markdown(
     """
     <div class="step-band">
@@ -2457,7 +2456,7 @@ else:
     st.info("当前数据没有 frames 字段，无法打开全景浏览模式。")
 
 st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-st.subheader("Step 3. Final Output（最终短 2D 视频）")
+st.subheader("视频最终摘要生成")
 st.markdown(
     """
     <div class="step-band">
